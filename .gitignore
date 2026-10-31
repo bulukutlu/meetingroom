@@ -1,0 +1,9 @@
+.env
+.env.*
+*.key
+.venv/
+__pycache__/
+meetings/
+*.jsonl
+.DS_Store
+*.pyc

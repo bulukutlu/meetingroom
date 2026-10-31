@@ -1,0 +1,44 @@
+[
+ {
+  "file": "face_1.png",
+  "source": "random-person_1.jpeg",
+  "skin": "#ca9988",
+  "hair": "#3e2f27",
+  "long": true
+ },
+ {
+  "file": "face_2.png",
+  "source": "random-person_2.jpeg",
+  "skin": "#a4716d",
+  "hair": "#3a2a24",
+  "long": true
+ },
+ {
+  "file": "face_3.png",
+  "source": "random-person_3.jpeg",
+  "skin": "#b98075",
+  "hair": "#b8b3aa",
+  "long": false
+ },
+ {
+  "file": "face_4.png",
+  "source": "random-person_4.jpeg",
+  "skin": "#dfa99d",
+  "hair": "#211815",
+  "long": false
+ },
+ {
+  "file": "face_5.png",
+  "source": "random-person_5.jpeg",
+  "skin": "#c78c7e",
+  "hair": "#b9853f",
+  "long": false
+ },
+ {
+  "file": "face_6.png",
+  "source": "random-person_6.jpeg",
+  "skin": "#cb937a",
+  "hair": "#4a2e20",
+  "long": false
+ }
+]

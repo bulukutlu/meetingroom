@@ -1,0 +1,822 @@
+"""Agents: one asyncio worker per participant, each with a provider backend
+(Anthropic Messages API, OpenAI Responses API, or a key-free demo backend)."""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from collections import deque
+from pathlib import Path
+
+from . import tools
+from .keys import get_key
+from .minutes import build as build_minutes
+
+BRIDGE = str(Path(__file__).with_name("mcp_bridge.py"))
+
+# Fixed face per agent, chosen by model seniority (stronger model = older face),
+# so a character never changes with how many agents are loaded or their order.
+# Faces in static/faces, by apparent age: 1 (~20) < 2 (~30) < 4 (~35) < 6 (~40) < 5 (~50) < 3 (~60).
+# Anthropic line uses the men 4/6/3, OpenAI line the women 1/2/5, so the two
+# families never collide. Override per agent with `face:` in agents.yaml.
+FACE_BY_TIER = {
+    "anthropic": {0: 4, 1: 6, 2: 3},   # haiku, sonnet, opus/fable
+    "openai":    {0: 1, 1: 2, 2: 5},   # nano, mini, full / codex default
+}
+
+
+def default_face(provider: str, model: str | None) -> int:
+    m = (model or "").lower()
+    if provider in ("claude-code", "anthropic"):
+        tier = 0 if "haiku" in m else 1 if "sonnet" in m else 2   # opus, fable, unknown -> senior
+        return FACE_BY_TIER["anthropic"][tier]
+    if provider in ("codex", "openai"):
+        tier = 0 if "nano" in m else 1 if ("mini" in m or "spark" in m) else 2
+        return FACE_BY_TIER["openai"][tier]
+    return 4
+
+
+def agent_face(spec: dict) -> int:
+    if spec.get("face"):
+        return int(spec["face"])
+    prov = spec.get("provider", "mock")
+    if prov == "mock":   # demo agents: guess the family from the name
+        n = spec.get("name", "").lower()
+        prov = "openai" if any(k in n for k in ("gpt", "codex", "openai")) else "anthropic"
+        return default_face(prov, n if any(k in n for k in ("haiku", "sonnet", "mini", "nano")) else "")
+    return default_face(prov, spec.get("model"))
+
+
+class TokenLimitReached(RuntimeError):
+    """A provider stopped the turn because its token allowance was exhausted."""
+
+
+def is_token_limit(error) -> bool:
+    text = str(error).lower()
+    return isinstance(error, TokenLimitReached) or any(marker in text for marker in (
+        "insufficient_quota", "usage_limit_reached", "rate_limit_exceeded",
+        "rate_limit_error", "ratelimiterror", "rate limit reached", "rate limit exceeded",
+        "usage limit reached", "usage limit exceeded", "you've hit your limit",
+        "you have hit your limit", "you've reached your usage limit",
+        "out of tokens", "token limit", "max_tokens", "max_output_tokens",
+        "credit balance is too low", "quota exceeded", "quota has been exceeded",
+        "context_length_exceeded", "maximum context length",
+    ))
+
+
+MAX_STEPS = 40  # tool-use iterations per turn
+
+# Shared by every agent type. The point of the room is that it feels FASTER
+# than chatting, so replies must be minimal.
+MEETING_RULES = """MEETING RULES (they override your usual style):
+- Speak only when it is unmistakably your turn: you were addressed by @name (or @all) with something to do or answer. If you are unsure, or have nothing that changes anything, reply exactly: PASS  (it is not shown to anyone).
+- Your reply is read aloud in a live meeting where everyone can see the shared screen. Match the length to what was asked:
+  * Task where you put something on the shared screen ("plot X", "make a table"): reply "Here it is." and stop. Say "Here it is" ONLY when you actually showed something on screen; otherwise just give the answer or result directly, with no such opener. Add ONE short sentence only if there is a caveat or hidden decision the listener truly needs (e.g. "Here it is. I dropped the first 200 events, they were pre-calibration."). Hard limit: 25 words. No lists, no file names, no recap of what you changed.
+  * Quick question (yes/no, a number, a fact): answer in at most 10 words. "Yes." / "62 electrons."
+  * Explicit request to explain, discuss or go into detail: answer as fully as needed, but still as tight as possible. Long spoken explanations are fine here; put equations, tables or code on screen.
+- Default to the shortest reply that works. If in doubt, cut it in half. Every spoken sentence costs the room time.
+- Prefer showing over telling: results, numbers, comparisons, tables and code belong on the shared screen (plots as PNG, tables/notes as markdown .md files which render nicely, interactive things as self-contained HTML).
+- Never: greetings, pleasantries, thanks, restating the question, announcing routine actions, step-by-step narration of routine actions, offering further help, "standing by", "ready when you are", summarising what others said, replying to acknowledgements.
+- Exception, big tasks: before starting a long project (many steps, minutes of work), give ONE short heads-up sentence saying what you will do (e.g. "I'll refactor the parser and rerun all fits."). Do not wait for a reply; start working right away. Never do this for routine or quick tasks.
+- Do not answer for others or comment on messages addressed to someone else.
+- Hand work to another participant only when needed, by STARTING your reply with @name and the concrete task (e.g. "@sonnet plot thr_map.csv as a heatmap."). Mentioning a name anywhere else does nothing; refer to others without @ otherwise.
+"""
+TURN_REMINDER = ("REMINDER: be as brief as possible. Task: show the result on screen, then \"Here it is.\" (only if you showed something on screen; otherwise just answer directly) plus at most ONE short "
+                 "sentence for a caveat; max 25 words, no lists, no recap. Quick question: max 10 words. Never describe what is on "
+                 "screen. Only go long when explicitly asked to explain. If nothing was asked of you, reply exactly: PASS")
+
+
+# Reasoning-effort levels selectable per agent (applied from the next turn on).
+EFFORTS = {
+    "claude-code": ["low", "medium", "high", "xhigh", "max"],
+    "codex": ["low", "medium", "high", "xhigh", "max"],
+}
+
+
+class Agent:
+    def __init__(self, room, spec: dict):
+        self.room = room
+        self.spec = spec
+        self.name: str = spec["name"]
+        self.provider: str = spec.get("provider", "mock")
+        self.model: str = spec.get("model", "")
+        self.color: str = spec.get("color", "#8888ff")
+        self.role: str = spec.get("role", "")
+        self.approval: str = spec.get("approval", "ask")  # 'ask' or 'auto'
+        # Reasoning effort; medium unless agents.yaml says otherwise (changeable live in the room).
+        self.effort: str = str(spec.get("effort") or ("medium" if self.provider in EFFORTS else ""))
+        self.max_tokens: int = int(spec.get("max_tokens", 16000))
+        self.workdir: Path = (room.workspace / "agents" / self.name).resolve()
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        self.status = "idle"
+        self.activity = ""
+        self.seen = 0              # index into room.messages already given to this agent
+        self.pending_context = ""  # context not yet committed (kept if a turn fails)
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.current: asyncio.Task | None = None
+        self.backend = None
+        self.offline_reason = ""
+        self.usage: dict = {}      # last-turn token usage + cumulative cost (Claude Code agents)
+        self.turn_id: str | None = None
+        try:
+            self.backend = make_backend(self)
+        except Exception as e:
+            self.offline_reason = str(e)
+            self.status = "offline"
+
+    # ---------- presentation ----------
+    def public(self) -> dict:
+        return {
+            "name": self.name, "provider": self.provider, "model": self.model,
+            "color": self.color, "role": self.role, "status": self.status,
+            "activity": self.activity, "approval": self.approval,
+            "effort": self.effort, "efforts": EFFORTS.get(self.provider, []),
+            "offline_reason": self.offline_reason, "workdir": str(self.workdir),
+            "face": agent_face(self.spec), "usage": self.usage,
+        }
+
+    def trace(self, kind: str, text: str = "", **extra):
+        """Record behind-the-scenes work for the meeting minutes."""
+        self.room.recorder.write(self.name, kind, text, turn=self.turn_id, **extra)
+
+    async def set_status(self, status: str | None = None, activity: str | None = None):
+        if status is not None:
+            self.status = status
+        if activity is not None:
+            self.activity = activity[:300]
+        await self.room.broadcast({"type": "agent", "agent": self.public()})
+
+    def system_prompt(self) -> str:
+        others = [a for a in self.room.agents.values() if a.name != self.name]
+        roster = "\n".join(f"- @{a.name} ({a.provider} {a.model}): {a.role or 'participant'}" for a in others) or "- (none)"
+        return f"""You are @{self.name}, an AI participant in a live working meeting run from the meeting-room app on {self.room.user}'s computer.
+
+Your role: {self.role or 'general assistant'}
+
+Other AI participants:
+{roster}
+
+{MEETING_RULES}
+How the meeting works:
+- You receive new transcript lines since your last turn, then the request addressed to you. Your final text answer is posted to the meeting.
+- You can actually do work on {self.room.user}'s machine with tools: run_shell, run_python, read_file, write_file, list_dir. Machine: {tools.machine_info(self.room.python)}.
+- Your workspace folder is {self.workdir}. Relative paths resolve there. Files elsewhere may be accessed with absolute paths; {self.room.user} may be asked to approve.
+- Show results with share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). Prefer showing over describing.
+- If a tool call is denied, do not retry it unchanged; adapt or ask.
+"""
+
+    # ---------- turn handling ----------
+    async def run_forever(self):
+        while True:
+            hop = await self.queue.get()
+            while not self.queue.empty():  # coalesce bursts of mentions
+                hop = min(hop, self.queue.get_nowait())
+            if self.backend is None:
+                await self.room.post("system", f"@{self.name} is offline: {self.offline_reason}", kind="system")
+                continue
+            self.current = asyncio.create_task(self._turn(hop))
+            try:
+                await self.current
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():  # app shutting down
+                    raise
+                self.trace("stopped")
+                await self.set_status("idle", "stopped")
+                await self.room.post(self.name, "_(stopped)_", kind="note")
+            except Exception as e:
+                self.trace("error", f"{type(e).__name__}: {e}")
+                if is_token_limit(e):
+                    await self.set_status("sleeping", "Token or usage limit reached. Mention me to retry when available.")
+                    await self.room.post("system", f"@{self.name} is sleeping: {str(e)[:500]}", kind="system")
+                else:
+                    await self.set_status("idle", "error")
+                    await self.room.post("system", f"@{self.name} hit an error: {type(e).__name__}: {e}", kind="system")
+            finally:
+                self.current = None
+                self.turn_id = None
+                try:
+                    await asyncio.to_thread(build_minutes, self.room.session_dir)
+                except Exception:
+                    pass
+
+    def stop(self):
+        if self.current and not self.current.done():
+            self.current.cancel()
+
+    def _gather_context(self) -> str:
+        new = self.room.messages[self.seen:]
+        self.seen = len(self.room.messages)
+        lines = []
+        for m in new:
+            if m["from"] == self.name or m["kind"] == "note":
+                continue
+            t = time.strftime("%H:%M", time.localtime(m["ts"]))
+            lines.append(f"[{t}] {m['from']}: {m['text']}")
+        if lines:
+            self.pending_context += "\n".join(lines) + "\n"
+        return self.pending_context
+
+    async def _turn(self, hop: int):
+        ctx = self._gather_context()
+        prompt = (
+            "New in the meeting transcript:\n" + (ctx or "(nothing new)\n") +
+            f"\nYou (@{self.name}) were mentioned. Do/answer only what was asked of YOU.\n\n{TURN_REMINDER}"
+        )
+        self.turn_id = uuid.uuid4().hex[:10]
+        self.trace("prompt", prompt)
+        await self.set_status("thinking", "")
+        reply = (await self.backend.turn(prompt) or "").strip()
+        self.pending_context = ""
+        await self.set_status("idle", "")
+        if reply.strip(" .*_`\"'").upper() in ("PASS", ""):
+            self.trace("pass", reply)
+            return  # nothing to say: stay silent
+        self.trace("reply", reply)
+        await self.room.post(self.name, reply, hop=hop + 1, turn=self.turn_id)
+
+    async def exec_tool(self, name: str, args: dict) -> str:
+        if not isinstance(args, dict):
+            args = {}
+        summary = tools.describe(name, args)
+        first = summary.splitlines()[0] if summary else name
+        if self.approval == "ask" and tools.needs_approval(name, args, self.workdir):
+            await self.set_status("waiting", f"waiting for approval: {name}")
+            ok = await self.room.request_approval(self, name, summary)
+            if not ok:
+                await self.set_status("working", f"denied: {name}")
+                return "The user DENIED this action. Do not retry it unchanged."
+        await self.set_status("working", f"{name}: {first[:120]}")
+        self.trace("tool_call", summary or json.dumps(args, indent=1), tool=name)
+        out = await tools.execute(name, args, self.workdir, self.room.python,
+                                  lambda p, title: self.room.share(self, p, title))
+        self.trace("tool_result", out, tool=name)
+        await self.set_status("thinking", f"{name} done")
+        return out
+
+
+# ---------------------------------------------------------------- backends
+
+def make_backend(agent: Agent):
+    if agent.provider == "claude-code":
+        return ClaudeCodeBackend(agent)
+    if agent.provider == "codex":
+        return CodexBackend(agent)
+    if agent.provider == "anthropic":
+        return AnthropicBackend(agent)
+    if agent.provider == "openai":
+        return OpenAIBackend(agent)
+    if agent.provider == "mock":
+        return MockBackend(agent)
+    raise ValueError(f"unknown provider '{agent.provider}'")
+
+
+def cli_meeting_prompt(a: Agent, tools_hint: str) -> str:
+    """System text for the CLI-driven agents (Claude Code, Codex)."""
+    others = [o for o in a.room.agents.values() if o.name != a.name]
+    roster = ", ".join(f"@{o.name} ({o.role or o.model})" for o in others) or "none"
+    return (
+        f"You are @{a.name}, one participant in a live working meeting hosted by {a.room.user} "
+        f"in the meeting-room app. Your role: {a.role or 'general assistant'}. Other AI participants: {roster}.\n\n"
+        + MEETING_RULES +
+        "\nEach turn you get the new transcript lines and the request addressed to you. Do the work with your "
+        "tools; your final text is posted to the meeting. " + tools_hint
+    )
+
+
+def bridge_env(a: Agent, drop_key: str) -> dict:
+    """Environment for a CLI agent: tells the MCP bridge how to reach the hub and
+    removes the API key variable so the CLI uses the user's own login."""
+    env = dict(os.environ)
+    env.update({"MR_URL": f"http://127.0.0.1:{a.room.port}", "MR_TOKEN": a.room.token, "MR_AGENT": a.name})
+    env.pop(drop_key, None)
+    return env
+
+
+def _need_key(provider: str) -> str:
+    key, _ = get_key(provider)
+    if not key:
+        raise RuntimeError(f"no {provider} API key (run: python -m meetingroom set-key {provider})")
+    return key
+
+
+class AnthropicBackend:
+    def __init__(self, agent: Agent):
+        from anthropic import AsyncAnthropic
+        self.agent = agent
+        self.client = AsyncAnthropic(api_key=_need_key("anthropic"))
+        self.history: list = []
+
+    async def turn(self, user_text: str) -> str:
+        a = self.agent
+        msgs = list(self.history) + [{"role": "user", "content": user_text}]
+        for _ in range(MAX_STEPS):
+            r = await self.client.messages.create(
+                model=a.model, max_tokens=a.max_tokens, system=a.system_prompt(),
+                tools=tools.anthropic_tools(), messages=msgs,
+            )
+            msgs.append({"role": "assistant", "content": [b.model_dump(exclude_none=True) for b in r.content]})
+            text = "".join(b.text for b in r.content if b.type == "text").strip()
+            if r.stop_reason == "max_tokens":
+                self.history = msgs
+                raise TokenLimitReached("Output token limit reached; mention me to continue.")
+            if r.stop_reason != "tool_use":
+                self.history = msgs
+                return text
+            if text:
+                a.trace("thought", text)
+                await a.set_status(activity=text[:200])
+            results = []
+            for b in r.content:
+                if b.type == "tool_use":
+                    out = await a.exec_tool(b.name, b.input)
+                    results.append({"type": "tool_result", "tool_use_id": b.id, "content": out})
+            msgs.append({"role": "user", "content": results})
+        self.history = msgs
+        return "I hit my step limit for this request; tell me if I should continue."
+
+
+class OpenAIBackend:
+    """OpenAI Responses API (required for tool calling). store=False keeps
+    conversation state on your machine rather than on OpenAI's servers."""
+
+    def __init__(self, agent: Agent):
+        from openai import AsyncOpenAI
+        self.agent = agent
+        self.client = AsyncOpenAI(api_key=_need_key("openai"))
+        self.items: list = []
+        self.include_reasoning = True
+
+    async def _create(self, items):
+        kw = dict(model=self.agent.model, instructions=self.agent.system_prompt(),
+                  input=items, tools=tools.openai_tools(), store=False)
+        if self.include_reasoning:
+            try:
+                return await self.client.responses.create(include=["reasoning.encrypted_content"], **kw)
+            except Exception as e:
+                if "include" not in str(e) and "reasoning" not in str(e):
+                    raise
+                self.include_reasoning = False  # non-reasoning model
+        return await self.client.responses.create(**kw)
+
+    async def turn(self, user_text: str) -> str:
+        a = self.agent
+        items = list(self.items) + [{"role": "user", "content": user_text}]
+        for _ in range(MAX_STEPS):
+            r = await self._create(items)
+            for it in r.output:
+                items.append(it.model_dump(exclude_none=True))
+            if r.status == "incomplete" and getattr(r.incomplete_details, "reason", "") == "max_output_tokens":
+                self.items = items
+                raise TokenLimitReached("Output token limit reached; mention me to continue.")
+            calls = [it for it in r.output if it.type == "function_call"]
+            if not calls:
+                self.items = items
+                return r.output_text or ""
+            for c in calls:
+                try:
+                    args = json.loads(c.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                out = await a.exec_tool(c.name, args)
+                items.append({"type": "function_call_output", "call_id": c.call_id, "output": out})
+        self.items = items
+        return "I hit my step limit for this request; tell me if I should continue."
+
+
+class ClaudeCodeBackend:
+    """Drives your installed Claude Code CLI (`claude -p`), logged in with your
+    own claude.ai account. The meeting room never sees those credentials:
+    Claude Code keeps them in its own secure storage.
+
+    Every turn runs `claude -p --resume <session>` in the agent's folder. Claude
+    Code's permission prompts are answered by the meeting room (approval cards)
+    through the local MCP bridge, which also provides share_to_screen."""
+
+    def __init__(self, agent: Agent):
+        self.agent = agent
+        exe = find_claude(agent.spec.get("claude_path"))
+        if not exe:
+            raise RuntimeError(
+                "Claude Code not found. In your terminal run `which claude` (or `type claude`) and put "
+                "that path as `claude_path:` for this agent in agents.yaml.")
+        self.exe = exe
+        self.session_id: str | None = None
+        self.permission_mode = agent.spec.get("permission_mode")  # optional
+        self.extra_dirs = [str(Path(d).expanduser()) for d in agent.spec.get("add_dirs", [])]
+        self.mcp_config = json.dumps({"mcpServers": {"meetingroom": {
+            "type": "stdio", "command": sys.executable, "args": [BRIDGE],
+        }}})
+
+    def _meeting_prompt(self) -> str:
+        return cli_meeting_prompt(self.agent,
+            "Show results with the mcp__meetingroom__share_to_screen "
+            "tool (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown); show rather "
+            "than describe. Save figures to files and never open GUI windows. If an action is denied, adapt instead "
+            "of retrying unchanged.")
+
+    def _cmd(self) -> list[str]:
+        a = self.agent
+        cmd = [self.exe, "-p", "--output-format", "stream-json", "--verbose",
+               "--append-system-prompt", self._meeting_prompt(),
+               "--mcp-config", self.mcp_config,
+               "--permission-prompt-tool", "mcp__meetingroom__approve",
+               "--allowedTools", "mcp__meetingroom__share_to_screen"]
+        if a.model:
+            cmd += ["--model", a.model]
+        if a.effort:
+            cmd += ["--effort", a.effort]
+        if self.permission_mode:
+            cmd += ["--permission-mode", self.permission_mode]
+        for d in self.extra_dirs:
+            cmd += ["--add-dir", d]
+        if self.session_id:
+            cmd += ["--resume", self.session_id]
+        return cmd
+
+    async def turn(self, user_text: str) -> str:
+        try:
+            return await self._run(user_text)
+        except _ResumeFailed:
+            self.session_id = None
+            return await self._run(user_text)
+
+    def _record_usage(self, ev: dict):
+        """Keep the last turn's context size and a running cost total for the UI."""
+        u = ev.get("usage") or {}
+        a = self.agent
+        ctx = int(u.get("input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0) \
+            + int(u.get("cache_creation_input_tokens") or 0)
+        a.usage = {
+            "context_tokens": ctx,
+            "output_tokens": int(u.get("output_tokens") or 0),
+            "cost_usd": round(float(a.usage.get("cost_usd", 0)) + float(ev.get("total_cost_usd") or 0), 4),
+            "turns": int(a.usage.get("turns", 0)) + 1,
+        }
+
+    async def _run(self, user_text: str) -> str:
+        a = self.agent
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue()
+        env = bridge_env(a, "ANTHROPIC_API_KEY")  # Claude Code uses YOUR claude.ai login
+        env["MCP_TOOL_TIMEOUT"] = str(24 * 3600 * 1000)
+        proc = subprocess.Popen(self._cmd(), cwd=str(a.workdir), env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace")
+        stderr_tail: deque[str] = deque(maxlen=30)
+
+        def pump_out():
+            for line in proc.stdout:
+                loop.call_soon_threadsafe(q.put_nowait, line)
+            loop.call_soon_threadsafe(q.put_nowait, None)
+
+        def pump_err():
+            stderr_tail.extend(proc.stderr)
+
+        threading.Thread(target=pump_out, daemon=True).start()
+        threading.Thread(target=pump_err, daemon=True).start()
+        try:
+            proc.stdin.write(user_text)
+            proc.stdin.close()
+        except OSError:
+            pass
+
+        final, is_error = None, False
+        try:
+            while True:
+                line = await q.get()
+                if line is None:
+                    break
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                t = ev.get("type")
+                if ev.get("session_id"):
+                    self.session_id = ev["session_id"]
+                if t == "assistant":
+                    for b in (ev.get("message") or {}).get("content") or []:
+                        if b.get("type") == "tool_use":
+                            name = b.get("name", "")
+                            if name.startswith("mcp__meetingroom__"):
+                                name = name.split("__")[-1]
+                            a.trace("tool_call", _pretty_input(b.get("input")), tool=name)
+                            await a.set_status("working", f"{name}: {_brief(b.get('input'))}")
+                        elif b.get("type") == "thinking" and str(b.get("thinking", "")).strip():
+                            a.trace("thought", b["thinking"])
+                        elif b.get("type") == "text" and b.get("text", "").strip():
+                            a.trace("thought", b["text"])
+                            await a.set_status("thinking", b["text"].strip()[:200])
+                elif t == "user":
+                    for b in (ev.get("message") or {}).get("content") or []:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            c = b.get("content")
+                            if isinstance(c, list):
+                                c = "\n".join(x.get("text", "") if x.get("type") == "text" else f"[{x.get('type')}]"
+                                              for x in c if isinstance(x, dict))
+                            a.trace("tool_result", str(c or ""), error=bool(b.get("is_error")))
+                    await a.set_status("thinking", None)
+                elif t == "rate_limit_event":
+                    info = ev.get("rate_limit_info") or {}
+                    await a.room.set_quota(info)
+                    if info.get("status") == "rejected":
+                        raise TokenLimitReached("Plan usage limit reached; retry after the quota resets.")
+                elif t == "result":
+                    final = ev.get("result") or "\n".join(str(e) for e in ev.get("errors") or []) or None or "\n".join(str(e) for e in ev.get("errors") or []) or None
+                    is_error = bool(ev.get("is_error")) or ev.get("subtype", "success") != "success"
+                    self._record_usage(ev)
+            await asyncio.to_thread(proc.wait)
+        except (asyncio.CancelledError, TokenLimitReached):
+            if proc.poll() is None:
+                proc.kill()
+            raise
+        err = "".join(stderr_tail).strip()
+        if final is None:
+            if "No conversation found" in err or ("session" in err.lower() and self.session_id and proc.returncode):
+                raise _ResumeFailed()
+            raise RuntimeError(f"Claude Code exited ({proc.returncode}) without a result. {err[-800:]}")
+        if is_error:
+            raise RuntimeError(f"Claude Code reported an error: {final or err[-800:]}")
+        return final
+
+
+class CodexBackend:
+    """Drives your installed OpenAI Codex CLI (`codex exec --json`), logged in
+    with your ChatGPT account (no API key). Each turn resumes the same thread.
+    Codex runs in its `workspace-write` sandbox (writes confined to the agent
+    folder + add_dirs) since `codex exec` cannot ask for approval interactively.
+    share_to_screen comes from the same local MCP bridge as Claude Code."""
+
+    def __init__(self, agent: Agent):
+        self.agent = agent
+        exe = agent.spec.get("codex_path") or shutil.which("codex") or next(
+            (str(p) for p in (Path.home() / ".local/bin/codex", Path("/opt/homebrew/bin/codex"),
+                              Path("/usr/local/bin/codex")) if p.is_file()), None)
+        if not exe:
+            raise RuntimeError("Codex CLI not found. Put its path as `codex_path:` for this agent in agents.yaml.")
+        self.exe = str(Path(exe).expanduser())
+        self.thread_id: str | None = None
+        self.sandbox = agent.spec.get("sandbox", "workspace-write")
+        self.network = bool(agent.spec.get("network", True))   # allow network inside the workspace-write sandbox
+        self.extra_dirs = [str(Path(d).expanduser()) for d in agent.spec.get("add_dirs", [])]
+
+    def _meeting_prompt(self) -> str:
+        return cli_meeting_prompt(self.agent,
+            "Show results with the meetingroom MCP tool "
+            "share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). "
+            "Save figures to files and never open GUI windows.")
+
+    def _cmd(self) -> list[str]:
+        a = self.agent
+        cmd = [self.exe, "exec"]
+        if self.thread_id:
+            cmd += ["resume", self.thread_id]
+        cmd += ["--json", "--skip-git-repo-check",
+                "-c", f"mcp_servers.meetingroom.command={json.dumps(sys.executable)}",
+                "-c", f"mcp_servers.meetingroom.args=[{json.dumps(BRIDGE)}]",
+                "-c", 'mcp_servers.meetingroom.env_vars=["MR_URL","MR_TOKEN","MR_AGENT"]',
+                "-c", "mcp_servers.meetingroom.tool_timeout_sec=86400",
+                "-c", 'mcp_servers.meetingroom.tools.share_to_screen.approval_mode="approve"',
+                "-c", f"sandbox_mode={json.dumps(self.sandbox)}",
+                "-c", 'approval_policy="never"']
+        if self.network:
+            cmd += ["-c", "sandbox_workspace_write.network_access=true"]
+        if not self.thread_id:
+            cmd += ["-C", str(a.workdir)]
+            for d in self.extra_dirs:
+                cmd += ["--add-dir", d]
+        if a.model:
+            cmd += ["-m", a.model]
+        if a.effort:
+            cmd += ["-c", f"model_reasoning_effort={json.dumps(a.effort)}"]
+        return cmd + ["-"]
+
+    async def _read_limits(self):
+        """`codex exec --json` doesn't stream plan limits, but Codex logs them in its session
+        file (~/.codex/sessions/.../rollout-*-<thread>.jsonl). Read the last token_count entry."""
+        if not self.thread_id:
+            return
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        files = sorted((home / "sessions").glob(f"**/rollout-*{self.thread_id}.jsonl"))
+        if not files:
+            return
+        last = None
+        with open(files[-1], "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 400_000))
+            for line in f.read().decode("utf-8", "replace").splitlines():
+                if '"token_count"' in line and '"rate_limits"' in line:
+                    last = line
+        if not last:
+            return
+        pl = json.loads(last).get("payload") or {}
+        rl, info = pl.get("rate_limits") or {}, pl.get("info") or {}
+        names = {300: "five_hour", 10080: "seven_day"}
+        wins = {}
+        for key in ("primary", "secondary"):
+            w = rl.get(key)
+            if w and w.get("used_percent") is not None:
+                wins[names.get(w.get("window_minutes"), key)] = {
+                    "utilization": w["used_percent"] / 100, "resetsAt": w.get("resets_at"),
+                    "status": "rejected" if rl.get("rate_limit_reached_type") else "allowed"}
+        await self.agent.room.set_quota({"windows": wins}, group="codex")
+        tot = (info.get("last_token_usage") or {}).get("total_tokens")
+        u = self.agent.usage
+        self.agent.usage = {"context_tokens": int(tot or 0), "cost_usd": None,
+                            "output_tokens": int((info.get("last_token_usage") or {}).get("output_tokens") or 0),
+                            "turns": int(u.get("turns", 0)) + 1}
+
+    async def turn(self, user_text: str) -> str:
+        a = self.agent
+        text = user_text if self.thread_id else self._meeting_prompt() + "\n\n" + user_text
+        env = bridge_env(a, "OPENAI_API_KEY")  # use the ChatGPT login
+        proc = await asyncio.create_subprocess_exec(
+            *self._cmd(), cwd=str(a.workdir), env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, limit=16 * 1024 * 1024)
+        proc.stdin.write(text.encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
+        err_task = asyncio.create_task(proc.stderr.read())
+        final, error = None, None
+        try:
+            async for raw in proc.stdout:
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                t, item = ev.get("type"), ev.get("item") or {}
+                if t == "thread.started":
+                    self.thread_id = ev.get("thread_id") or self.thread_id
+                elif t == "item.started" and item.get("type") == "command_execution":
+                    await a.set_status("working", f"shell: {str(item.get('command', ''))[:120]}")
+                elif t == "item.started" and item.get("type") == "mcp_tool_call":
+                    await a.set_status("working", str(item.get("tool", "tool")))
+                elif t == "item.completed" and item.get("type") == "command_execution":
+                    a.trace("tool_call", str(item.get("command", "")), tool="shell")
+                    a.trace("tool_result", f"[exit {item.get('exit_code')}]\n{item.get('aggregated_output', '')}", tool="shell")
+                elif t == "item.completed" and item.get("type") == "mcp_tool_call":
+                    a.trace("tool_call", _pretty_input(item.get("arguments")), tool=str(item.get("tool", "tool")))
+                    a.trace("tool_result", _pretty_input(item.get("result") or item.get("error")), tool=str(item.get("tool", "tool")))
+                elif t == "item.completed" and item.get("type") == "file_change":
+                    a.trace("tool_call", "\n".join(f"{c.get('kind')}: {c.get('path')}" for c in item.get("changes") or []),
+                            tool="file_change")
+                elif t == "item.completed" and item.get("type") == "agent_message":
+                    if final:
+                        a.trace("thought", final)
+                    final = item.get("text", "")
+                elif t == "item.completed" and item.get("type") == "reasoning":
+                    a.trace("thought", str(item.get("text", "")))
+                    await a.set_status("thinking", str(item.get("text", "")).strip()[:200])
+                elif t in ("turn.failed", "error"):
+                    error = (ev.get("error") or {}).get("message") or ev.get("message") or str(ev)
+            await proc.wait()
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                proc.kill()
+            raise
+        err = (await err_task).decode(errors="replace").strip()
+        try:
+            await self._read_limits()
+        except Exception:
+            pass   # usage display is best-effort
+        if error:
+            raise RuntimeError(str(error))
+        if final is None:
+            raise RuntimeError(f"Codex exited ({proc.returncode}) without a reply. {error or ''} {err[-800:]}")
+        return final
+
+
+class _ResumeFailed(Exception):
+    pass
+
+
+_CLAUDE_CACHE: dict = {}
+
+
+def find_claude(configured: str | None) -> str | None:
+    """Locate the Claude Code executable: configured path, PATH, the usual
+    install locations, and finally the user's login shell (which also resolves
+    an `alias claude=...` from ~/.zshrc)."""
+    def ok(p) -> str | None:
+        p = os.path.expanduser(str(p).strip().strip("'\""))
+        return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
+
+    if configured:
+        return ok(configured)
+    if "exe" in _CLAUDE_CACHE:
+        return _CLAUDE_CACHE["exe"]
+    home = Path.home()
+    found = shutil.which("claude")
+    for c in ([] if found else [
+        home / ".claude/local/claude", home / ".local/bin/claude", "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude", home / ".npm-global/bin/claude", home / ".bun/bin/claude",
+        home / ".volta/bin/claude", home / "bin/claude",
+    ]):
+        found = ok(c)
+        if found:
+            break
+    if not found:
+        shell = os.environ.get("SHELL") or "/bin/zsh"
+        try:
+            out = subprocess.run([shell, "-ilc", "command -v claude"], capture_output=True,
+                                 text=True, timeout=15, stdin=subprocess.DEVNULL).stdout
+            for line in reversed(out.strip().splitlines()):
+                m = re.match(r"\s*(?:alias\s+)?claude=(.+)$", line) or re.match(r"claude: aliased to (.+)$", line)
+                cand = (m.group(1) if m else line).strip().strip("'\"").split()[0] if line.strip() else ""
+                found = ok(cand) if cand else None
+                if found:
+                    break
+        except Exception:
+            pass
+    _CLAUDE_CACHE["exe"] = found
+    return found
+
+
+def _pretty_input(inp) -> str:
+    if isinstance(inp, str):
+        return inp
+    if isinstance(inp, dict) and set(inp) <= {"command", "description", "timeout"} and "command" in inp:
+        return (f"# {inp['description']}\n" if inp.get("description") else "") + str(inp["command"])
+    try:
+        return json.dumps(inp, indent=1, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(inp)
+
+
+def _brief(inp) -> str:
+    if not isinstance(inp, dict):
+        return ""
+    for k in ("command", "file_path", "path", "pattern", "url", "query", "description"):
+        if inp.get(k):
+            return str(inp[k]).replace("\n", " ")[:140]
+    return json.dumps(inp)[:140]
+
+
+class MockBackend:
+    """Key-free demo participant that really runs tools, so you can try the
+    room (and the approval flow) before adding any API keys."""
+
+    def __init__(self, agent: Agent):
+        self.agent = agent
+
+    async def turn(self, user_text: str) -> str:
+        a = self.agent
+        req = user_text.lower()
+        last = [l for l in req.splitlines() if l.startswith("[") and (f"@{a.name}" in l or "@all" in l)]
+        ask = (last[-1] if last else req).lower()
+        await asyncio.sleep(0.6)
+        if any(w in ask for w in ("plot", "chart", "figure", "histogram")):
+            code = DEMO_PLOT.replace("{NAME}", a.name)
+            out = await a.exec_tool("run_python", {"code": code})
+            if "exit code: 0" not in out:
+                return f"The plot script failed:\n```\n{out[-600:]}\n```"
+            await a.exec_tool("share_to_screen", {"path": "demo_plot.png", "title": f"{a.name}: demo threshold scan"})
+            return "Here it is. I fixed the noise at 9 electrons for the fit, the tail was too sparse to fit it freely."
+        if any(w in ask for w in ("html", "page", "dashboard", "table")):
+            await a.exec_tool("write_file", {"path": "demo_page.html", "content": DEMO_HTML.replace("{NAME}", a.name)})
+            await a.exec_tool("share_to_screen", {"path": "demo_page.html", "title": f"{a.name}: summary page"})
+            return "Here it is."
+        return ("I'm a demo participant, so no model is connected yet. Ask me for a *plot* or a *page* "
+                "to see the tool and screen flow. Add API keys to bring in real Claude and GPT agents.")
+
+
+DEMO_PLOT = r'''
+import math, random
+random.seed(7)
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except ImportError:
+    raise SystemExit("matplotlib not installed in this Python")
+xs = [i * 2.0 for i in range(60)]
+mu, sig = 62.0, 9.0
+ys = [min(1, max(0, 0.5 * (1 + math.erf((x - mu) / (sig * 2 ** 0.5))) + random.gauss(0, 0.025))) for x in xs]
+fig, ax = plt.subplots(figsize=(7, 4.2), dpi=150)
+ax.plot(xs, ys, "o", ms=4, color="#4c78a8", label="pixel response")
+fx = [i * 0.5 for i in range(240)]
+ax.plot(fx, [0.5 * (1 + math.erf((x - mu) / (sig * 2 ** 0.5))) for x in fx], color="#e45756", lw=2,
+        label=f"fit: thr = {mu:.0f} e-, noise = {sig:.0f} e-")
+ax.set_xlabel("injected charge (e-)"); ax.set_ylabel("hit fraction")
+ax.set_title("Demo threshold scan ({NAME})"); ax.grid(alpha=.3); ax.legend(frameon=False)
+fig.tight_layout(); fig.savefig("demo_plot.png")
+print("saved demo_plot.png")
+'''
+
+DEMO_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+body{font-family:system-ui,sans-serif;margin:32px;color:#1d2330}
+h1{font-size:20px;margin:0 0 4px} p{color:#5a6475;margin:0 0 20px}
+table{border-collapse:collapse;min-width:420px} td,th{padding:8px 14px;border-bottom:1px solid #e3e6ec;text-align:left}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#6b7385}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+</style></head><body><h1>Run summary</h1><p>Generated by {NAME} (demo data)</p>
+<table><tr><th>Chip</th><th>Threshold (e-)</th><th>Noise (e-)</th><th>Dead pixels</th></tr>
+<tr><td>A01</td><td class=n>101.2</td><td class=n>5.8</td><td class=n>3</td></tr>
+<tr><td>A02</td><td class=n>98.7</td><td class=n>6.1</td><td class=n>0</td></tr>
+<tr><td>A03</td><td class=n>104.9</td><td class=n>5.5</td><td class=n>12</td></tr></table></body></html>"""

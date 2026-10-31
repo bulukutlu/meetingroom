@@ -1,0 +1,71 @@
+# Meeting room participants.
+# NEVER put API keys here.
+
+user_name: Berkin
+
+# Everything the agents create lives here (one sub-folder per agent, plus
+# meetings/<date>/ with the transcript and every file shown on screen).
+workspace: ~/MeetingRoom
+
+# Python used by the built-in run_python tool of API agents (Claude Code agents
+# use their own Bash tool and whatever python is on your PATH).
+python:
+
+# Voice input. "whisper" transcribes locally on this computer (audio never
+# leaves it); the first start downloads the model once (~1.6 GB).
+# "browser" uses Chrome's built-in speech recognition instead.
+voice:
+  engine: whisper
+  language: en          # leave empty to auto-detect (e.g. if you switch languages)
+  # model: mlx-community/whisper-large-v3-turbo   # default on Apple Silicon
+  vocabulary: [ALICE, ALICE 3, ITS3, ALPIDE, bent ALPIDE, MOSS, BabyMOSS, MAPS, TPC, LVDS,
+               Hyper Tracker, Outer Tracker, test beam, Krakow, S-curve, threshold scan,
+               fake-hit rate, Corryvreckan, Allpix Squared, ROOT, uproot, Overleaf]
+
+# Reading replies aloud ("Read replies aloud" in the room). "kokoro" generates
+# natural voices locally (model ~340 MB, downloaded once); "browser" uses the
+# browser's built-in voices. Give an agent its own voice with `voice:` below,
+# e.g. am_michael, am_adam, am_eric, am_liam, bm_george, bm_daniel, af_heart,
+# af_bella, af_nicole, bf_emma, bf_isabella.
+narration:
+  engine: kokoro
+  speed: 1.1
+
+agents:
+  # --- Claude Code agents: use your installed `claude` CLI and your claude.ai login.
+  #     No API key involved. Usage counts against your plan.
+  - name: claude
+    provider: claude-code
+    model: opus             # alias or full model name, as accepted by `claude --model`
+    color: "#d97757"
+    role: Lead analyst. Plans the work, does the heavier analysis and reviews others' results.
+    approval: ask           # ask = every permission request becomes an approval card; auto = allow all
+    # effort: high          # low | medium | high | xhigh | max; omit = medium. Also switchable live in the room.
+    # face: 3               # override; default is fixed by model seniority (see FACE_BY_TIER in meetingroom/agents.py); new photos: python tools/make_faces.py <folder>
+    # add_dirs: [~/data]    # extra folders it may work in without asking
+    # claude_path: /usr/local/bin/claude   # only if `claude` isn't on your PATH
+
+  - name: sonnet
+    provider: claude-code
+    model: sonnet
+    color: "#6a8fd8"
+    role: Fast helper for quick scripts, file wrangling and plots.
+    approval: ask
+
+  # --- Codex CLI agent: uses your installed `codex` and its ChatGPT login. No API key.
+  #     Runs in Codex's workspace-write sandbox (no approval cards; writes stay in its folder + add_dirs).
+  - name: codex
+    provider: codex
+    model:                  # empty = Codex default; or e.g. gpt-5.6-sol
+    color: "#10a37f"
+    role: Second opinion. Independent cross-checks, alternative approaches, HTML pages.
+    add_dirs: [~/Software/meetingroom]   # lets Codex edit the app itself (restart the room after changing)
+    network: true           # Codex may use the internet (curl, pip, web APIs). Set false to block; restart after changing.
+
+  # --- API agents (need a key: python -m meetingroom set-key openai|anthropic)
+  # - name: gpt
+  #   provider: openai
+  #   model: gpt-5.6-sol
+  #   color: "#10a37f"
+  #   role: Second opinion. Independent cross-checks, alternative approaches, HTML pages.
+  #   approval: ask
