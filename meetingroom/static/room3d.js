@@ -10,7 +10,11 @@ const texLoader = new THREE.TextureLoader();
 const SEAT = new THREE.Vector3(0.1, 0, 0.66);
 const LEAN = [new THREE.Vector3(-0.66, 0, 0.42), new THREE.Vector3(0.8, 0, 0.4), new THREE.Vector3(-1.0, 0, 0.02)];
 const HOME = [new THREE.Vector3(-1.3, 0, 0.35), new THREE.Vector3(1.3, 0, 0.3), new THREE.Vector3(1.15, 0, -0.95),
-              new THREE.Vector3(0.95, 0, 1.0), new THREE.Vector3(-1.6, 0, -0.75), new THREE.Vector3(0.2, 0, 1.25)];
+              new THREE.Vector3(0.95, 0, 1.0), new THREE.Vector3(-1.6, 0, -0.75), new THREE.Vector3(0.2, 0, 1.25),
+              // extra chairs for larger meetings (further out, still inside the walls)
+              new THREE.Vector3(-2.5, 0, 0.9), new THREE.Vector3(2.4, 0, 0.9), new THREE.Vector3(-2.5, 0, -0.3), new THREE.Vector3(2.5, 0, -0.35),
+              new THREE.Vector3(-0.7, 0, 1.75), new THREE.Vector3(1.7, 0, 1.7), new THREE.Vector3(-2.3, 0, -1.4), new THREE.Vector3(2.3, 0, -1.45)];
+const homeFor = i => HOME[i % HOME.length].clone().add(new THREE.Vector3(0.25, 0, 0.2).multiplyScalar(Math.floor(i / HOME.length)));
 // dozing: an idle agent nobody has talked to for a while nods off on its chair (wakes instantly when addressed)
 const DOZE_AFTER_MS = (Number(new URLSearchParams(location.search).get("doze")) || 240) * 1000;   // ?doze=<seconds> to override
 const PANTS = [0x2f3440, 0x3d3a34, 0x34302a, 0x2b2f36, 0x40343a, 0x303a33];
@@ -423,7 +427,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
         const fid = a.face || FACE_ORDER[[...a.name].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % FACE_ORDER.length];   // server sends a fixed face; name hash only as fallback
         const rig = buildChar(new THREE.Color(a.color).getHex(), FACES[(fid - 1) % Math.max(1, FACES.length)] || null, PANTS[i % PANTS.length]);
         scene.add(rig.root);
-        const home = HOME[i % HOME.length].clone();
+        const home = homeFor(i);
         rig.root.position.copy(home);
         const chairYaw = lerpAngle(Math.atan2(-0.2 - home.x, -0.2 - home.z), Math.atan2(ROOM_POS.x - home.x, ROOM_POS.z - home.z), 0.55);
         makeChair(scene, home, chairYaw);

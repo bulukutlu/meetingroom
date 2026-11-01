@@ -45,6 +45,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  .role{color:var(--muted);font-size:12px;margin-top:2px;min-height:34px}
  .chair{position:absolute;top:8px;right:8px;font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.08em;padding:3px 7px;border-radius:4px;background:#000a;color:var(--dim)}
  .on .chair{background:var(--c);color:#1a120c}
+ .qty{display:flex;align-items:center;gap:6px;margin-top:8px}.qty span{flex:1;text-align:center;font-size:12px;color:var(--muted)}
+ .qty button{background:#2e241b;color:var(--text);border:2px solid #000;border-radius:6px;font:600 12px system-ui;padding:4px 9px;cursor:pointer}.qty button:hover{background:#3a2e22}
  .bar{margin-top:30px;display:flex;gap:14px;align-items:center}
  .go{padding:12px 30px;background:var(--amber);color:#1a120c;border:0;border-radius:8px;font:700 15px system-ui;cursor:pointer;box-shadow:0 4px 0 #8a5f1c}
  .go:active{transform:translateY(3px);box-shadow:0 1px 0 #8a5f1c}.go:disabled{opacity:.4;cursor:default}
@@ -69,7 +71,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  .recent span{font:11.5px ui-monospace,Menlo,monospace;color:var(--muted);border:1px solid var(--line2);border-radius:5px;padding:2px 8px;cursor:pointer}
  .recent span:hover{color:var(--text);border-color:#6a5640}
 </style></head><body>
-<h1>&#9679; Meeting room</h1><h2>Who joins this meeting?</h2><p class="sub">Click to pull up a chair. Empty chairs stay dark.</p>
+<h1>&#9679; Meeting room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair, or use + chair to seat several of the same model.</p>
 <div class="grid" id="grid"></div>
 <div class="where">
  <h3>Where does the meeting take place?</h3>
@@ -87,8 +89,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
 const AGENTS=__AGENTS__, T=__TOKEN__, KEY='mr-agents', Q='?t='+encodeURIComponent(T);
 const THREE=await import('/vendor/three.min.js'+Q);
 const FACES=await fetch('/faces/faces.json'+Q).then(r=>r.json()).catch(()=>[]);
-let sel=new Set((JSON.parse(localStorage.getItem(KEY)||'null')||AGENTS.map(a=>a.name)).filter(n=>AGENTS.some(a=>a.name===n)));
-if(!sel.size)AGENTS.forEach(a=>sel.add(a.name));
+const MAXC=4;
+const cnt={};AGENTS.forEach(a=>cnt[a.name]=0);
+{let saved=JSON.parse(localStorage.getItem(KEY)||'null');if(!Array.isArray(saved))saved=AGENTS.map(a=>a.name);
+ saved.forEach(n=>{if(n in cnt&&cnt[n]<MAXC)cnt[n]++});
+ if(!Object.values(cnt).some(v=>v))AGENTS.forEach(a=>cnt[a.name]=1)}
+const total=()=>Object.values(cnt).reduce((x,y)=>x+y,0);
 const $=id=>document.getElementById(id), grid=$('grid'), busts=[];
 const texLoader=new THREE.TextureLoader();
 __CHAR__
@@ -101,23 +107,27 @@ function bust(a,canvas){
  rig.armL.rotation.z=.06;rig.armR.rotation.z=-.06;
  cam.position.set(0,1.62,2.1);cam.lookAt(0,1.4,0);
  const ph=Math.random()*6;
- busts.push(t=>{const on=sel.has(a.name);rig.root.rotation.y=Math.sin(t*.7+ph)*(on?.5:.2);
+ busts.push(t=>{const on=cnt[a.name]>0;rig.root.rotation.y=Math.sin(t*.7+ph)*(on?.5:.2);
   rig.head.rotation.x=Math.sin(t*1.1+ph)*.04+(on?0:.3);rig.upper.rotation.x=on?0:.08;rig.root.position.y=Math.sin(t*2+ph)*(on?.008:0);
   r.setSize(canvas.clientWidth,canvas.clientHeight,false);cam.aspect=canvas.clientWidth/canvas.clientHeight;cam.updateProjectionMatrix();r.render(sc,cam)});
 }
 AGENTS.forEach(a=>{const c=document.createElement('div');c.className='card';c.style.setProperty('--c',a.color);
- c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>@'+a.name+'</div><div class="role">'+a.provider+(a.role?' - '+a.role:'')+'</div>';
- c.onclick=()=>{sel.has(a.name)?sel.delete(a.name):sel.add(a.name);draw()};grid.append(c);a.el=c;
+ c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>@'+a.name+'</div><div class="role">'+a.provider+(a.role?' - '+a.role:'')+'</div><div class="qty"><button data-d="-1" title="Remove a chair">&minus;</button><span></span><button data-d="1" title="Add another chair for this model">+ chair</button></div>';
+ c.onclick=e=>{const b=e.target.closest('[data-d]');
+  if(b){const n=cnt[a.name]+ +b.dataset.d;if(n>=0&&n<=MAXC&&total()+ +b.dataset.d<=12)cnt[a.name]=n}
+  else cnt[a.name]=cnt[a.name]?0:1;
+  draw()};grid.append(c);a.el=c;
  try{bust(a,c.querySelector('canvas'))}catch(e){c.querySelector('.win').textContent=''}});
-function draw(){AGENTS.forEach(a=>{const on=sel.has(a.name);a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?'SEATED':'EMPTY'});$('go').disabled=!sel.size}
-$('all').onclick=()=>{sel.size===AGENTS.length?sel.clear():AGENTS.forEach(a=>sel.add(a.name));draw()};
+function draw(){AGENTS.forEach(a=>{const n=cnt[a.name],on=n>0;a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?(n>1?n+' CHAIRS':'SEATED'):'EMPTY';a.el.querySelector('.qty span').textContent=n+(n===1?' chair':' chairs')});
+ $('go').disabled=!total();$('go').textContent='Start meeting ('+total()+' seated)'}
+$('all').onclick=()=>{const any=total()>0;AGENTS.forEach(a=>cnt[a.name]=any?0:1);draw()};
 (function loop(t){busts.forEach(b=>b(t/1000));requestAnimationFrame(loop)})(0);
-$('go').onclick=async()=>{const names=AGENTS.map(a=>a.name).filter(n=>sel.has(n)), w=where();
+$('go').onclick=async()=>{const names=AGENTS.flatMap(a=>Array(cnt[a.name]).fill(a.name)), w=where();
  if(w.kind!=='default'&&!w.path&&w.kind==='local'){status('Choose a project folder (or pick “Agents’ own folders”).','bad');return}
  if(w.kind==='ssh'&&!w.host){status('Enter an SSH host.','bad');return}
  localStorage.setItem(KEY,JSON.stringify(names));$('go').disabled=true;$('go').textContent=w.kind==='ssh'?'Connecting...':'Starting...';
  const res=await fetch('/select'+Q,{method:'POST',body:JSON.stringify({agents:names,location:w})});
- if(!res.ok){const j=await res.json().catch(()=>({}));status(j.error||'Could not start ('+res.status+')','bad');$('go').disabled=false;$('go').textContent='Start meeting';return}
+ if(!res.ok){const j=await res.json().catch(()=>({}));status(j.error||'Could not start ('+res.status+')','bad');$('go').disabled=false;draw();return}
  const j=await res.json().catch(()=>({}));if(j.location)Object.assign(w,j.location);
  localStorage.setItem(WKEY,JSON.stringify(w));
  if(w.kind!=='default'){const rec=JSON.parse(localStorage.getItem(RKEY)||'[]').filter(r=>!(r.kind===w.kind&&r.path===w.path&&(r.host||'')===(w.host||'')));
@@ -224,7 +234,7 @@ def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> tup
                 body = {"agents": body}
             body = body if isinstance(body, dict) else {}
             valid = {a["name"] for a in agents}
-            names = [n for n in body.get("agents") or [] if n in valid]
+            names = [n for n in body.get("agents") or [] if n in valid][:12]
             if not names:
                 return self._json(400, {"error": "choose at least one participant"})
             loc = Location.from_dict(body.get("location"))

@@ -171,6 +171,7 @@ class Agent:
         self.color: str = spec.get("color", "#8888ff")
         self.role: str = spec.get("role", "")
         self.approval: str = spec.get("approval", "ask")  # 'ask' or 'auto'
+        self.supervisor: bool = bool(spec.get("supervisor", False))  # may run longer back-and-forth chains
         # Reasoning effort; medium unless agents.yaml says otherwise (changeable live in the room).
         self.effort: str = str(spec.get("effort") or ("medium" if self.provider in EFFORTS else ""))
         self.max_tokens: int = int(spec.get("max_tokens", 16000))

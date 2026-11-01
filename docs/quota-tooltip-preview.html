@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>Quota reset tooltip preview</title><style>body{background:#120d09;color:#efe6d6;font:16px system-ui;padding:40px}button{background:#1b1510;color:#7fd36f;border:1px solid #3f6a35;padding:12px;font:14px monospace}pre{white-space:pre-wrap;line-height:1.8;color:#c8bba7}</style><h2>Quota reset tooltip</h2><p>Preview with example usage. Hover over the box to see reset dates and local times.</p><button id="quota"></button><pre id="details"></pre><script>const S={"quota":{"claude":{"asof":1793539110.73,"windows":{"five_hour":{"utilization":0.35,"resetsAt":1793546310}}},"codex":{"asof":1793539110.73,"windows":{"seven_day":{"utilization":0.6,"resetsAt":1793632710}}}}};const $=id=>document.getElementById(id);const QNAME = { five_hour: "5h", seven_day: "7d", seven_day_opus: "7d Opus", seven_day_sonnet: "7d Sonnet" };
+function quotaResetLabel(ts) {
+  if (ts == null || ts === "") return "reset time unavailable";
+  const numeric = Number(ts);
+  const reset = new Date(Number.isFinite(numeric) ? numeric * 1000 : ts);
+  if (!Number.isFinite(reset.getTime())) return "reset time unavailable";
+  const at = reset.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short"
+  });
+  const m = Math.max(0, Math.ceil((reset.getTime() - Date.now()) / 60000));
+  const remaining = m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor(m % 1440 / 60)}h` : m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+  return reset.getTime() <= Date.now() ? `reset was due ${at}; awaiting updated usage` : `resets ${at} (in ${remaining})`;
+}
+function renderQuota() {
+  const q = S.quota || {}, el = $("quota");
+  const groups = Object.entries(q).filter(([, g]) => g && g.windows && Object.keys(g.windows).length);
+  if (!groups.length) { el.style.display = "none"; return; }
+  el.style.display = "";
+  const pct = x => x.utilization == null ? "?" : Math.round(x.utilization * 100) + "%";
+  const label = { claude: "Claude", codex: "Codex" };
+  el.textContent = groups.map(([n, g]) => `${label[n] || n}: ` +
+    Object.entries(g.windows).map(([k, x]) => `${QNAME[k] || k} ${pct(x)}`).join(" · ")).join("   |   ");
+  const all = groups.flatMap(([, g]) => Object.values(g.windows));
+  const worst = Math.max(...all.map(x => x.utilization || 0));
+  el.className = "vchip " + (all.some(x => x.status === "rejected") || worst >= 0.9 ? "bad" : worst >= 0.7 ? "wait" : "ok");
+  el.title = groups.map(([n, g]) => `${label[n] || n} plan (updated ${new Date(g.asof * 1000).toLocaleTimeString()}, after a turn):\n` +
+    Object.entries(g.windows).map(([k, x]) => `  ${QNAME[k] || k}: ${pct(x)} used, ${quotaResetLabel(x.resetsAt)}`).join("\n")).join("\n");
+}
+
+renderQuota();document.getElementById('details').textContent=document.getElementById('quota').title;</script>

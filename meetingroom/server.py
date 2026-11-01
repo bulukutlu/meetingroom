@@ -31,6 +31,9 @@ STATIC = Path(__file__).parent / "static"
 MENTION = re.compile(r"@([A-Za-z0-9_\-]+)")
 LEADING_MENTIONS = re.compile(r"^\s*((?:@[A-Za-z0-9_\-]+[\s,:]*)+)")
 MAX_HOPS = 2  # you -> agent -> handoff -> one reply back, then it stops
+# Chains involving a supervisor agent (`supervisor: true` in agents.yaml) may run
+# 3 full round trips: user -> S -> W -> S -> W -> S -> W -> S, then it stops.
+MAX_HOPS_SUPERVISED = 6
 KINDS = {
     "image": {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"},
     "html": {".html", ".htm"},
@@ -173,7 +176,10 @@ class Room:
         if kind == "msg" and self.narrate and self.tts.status == "ready" and sender.lower() in self.agents:
             self.msg_audio.start(m["id"], text, sender)   # start voicing before the page even asks
         await self.broadcast({"type": "message", "message": m})
-        if kind == "msg" and hop <= MAX_HOPS:
+        limit = MAX_HOPS
+        if any(getattr(self.agents.get(n.lower()), "supervisor", False) for n in [sender, *m["to"]]):
+            limit = MAX_HOPS_SUPERVISED
+        if kind == "msg" and hop <= limit:
             for a in targets:
                 a.queue.put_nowait(hop)
         return m

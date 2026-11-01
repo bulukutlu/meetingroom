@@ -179,7 +179,8 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
 
 - **Address agents:** `@claude fit the S-curves in ~/data/run512 and plot the
   threshold map`. `@all` addresses everyone. Agents can hand work to each other
-  (`@codex cross-check this`); the number of hops is capped.
+  (`@codex cross-check this`); the number of hops is capped (one reply back; up to three round trips when
+  an agent has `supervisor: true` in `agents.yaml`).
 - **Voice:** hold `Space` to talk (push-to-talk) or press `Ctrl+Space` / the mic
   to toggle. Starting with a name ("Claude, can you…") becomes `@claude`.
   `S` stops the current read-aloud.

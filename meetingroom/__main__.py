@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import re
 import secrets
 import sys
 import threading
@@ -111,9 +112,9 @@ def main():
     if a.agents:
         want = [n.strip().lower() for n in a.agents.split(",") if n.strip()]
         known = {x["name"].lower() for x in all_agents}
-        if bad := [n for n in want if n not in known]:
+        if bad := [n for n in want if n not in known and re.sub(r"[-_ ]?\d+$", "", n) not in known]:
             sys.exit(f"unknown agent(s): {', '.join(bad)} (configured: {', '.join(sorted(known))})")
-        names = [x["name"] for x in all_agents if x["name"].lower() in want]
+        names = want      # repeats / "sonnet-2" make extra chairs of that model
     elif a.all or len(all_agents) < 2:
         names = [x["name"] for x in all_agents]
     else:
@@ -123,7 +124,8 @@ def main():
         if not (a.project or a.ssh):
             loc = picked
         opener = None   # already open; the page redirects itself into the room
-    cfg = {**cfg, "agents": [x for x in all_agents if x["name"] in names], "location": loc}
+    from .agents import expand_agents
+    cfg = {**cfg, "agents": expand_agents(all_agents, names), "location": loc}
     if loc.remote:
         print(f"  Connecting to {loc.host} ...")
         try:
