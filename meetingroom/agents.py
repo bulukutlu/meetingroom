@@ -186,6 +186,7 @@ class Agent:
         self.seen = 0              # index into room.messages already given to this agent
         self.pending_context = ""  # context not yet committed (kept if a turn fails)
         self.queue: asyncio.Queue = asyncio.Queue()
+        self.requesters: set[str] = set()   # agents who handed work to this one since its last turn
         self.current: asyncio.Task | None = None
         self.backend = None
         self.offline_reason = ""
@@ -302,9 +303,13 @@ How the meeting works:
 
     async def _turn(self, hop: int):
         ctx = self._gather_context()
+        reqs = sorted(self.requesters)
+        self.requesters = set()
+        handle = " ".join(f"@{r}" for r in reqs)
         prompt = (
             "New in the meeting transcript:\n" + (ctx or "(nothing new)\n") +
             f"\nYou ({self.person}, @{self.name}) were mentioned. Do/answer only what was asked of YOU.\n\n{TURN_REMINDER}"
+            + (f"\n\nYou were asked by {handle}: START your reply with {handle} so they are notified and can react." if reqs else "")
         )
         self.turn_id = uuid.uuid4().hex[:10]
         self.trace("prompt", prompt)
@@ -315,6 +320,9 @@ How the meeting works:
         if reply.strip(" .*_`\"'").upper() in ("PASS", ""):
             self.trace("pass", reply)
             return  # nothing to say: stay silent
+        for r in reqs:   # guarantee the requester is addressed, else they are never triggered again
+            if not re.match(r"\s*(?:@[\w\-]+[\s,:]*)*?@" + re.escape(r) + r"\b", reply, re.I):
+                reply = f"@{r} " + reply
         self.trace("reply", reply)
         await self.room.post(self.name, reply, hop=hop + 1, turn=self.turn_id)
 

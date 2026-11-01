@@ -17,7 +17,7 @@ def _char_source() -> str:
     a, b = src.index("const B = {"), src.index("// ---------------------------------------------------------------- homography")
     return src[a:b].replace('new URL("./faces/" + face.file, import.meta.url).href', '"/static/faces/" + face.file')
 
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room - corridor</title>
+PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room - corridor</title><link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <style>
  :root{--bg:#120d09;--panel:#1b1510;--panel2:#241c15;--line:#352a1f;--line2:#46382a;--text:#efe6d6;--muted:#a8977f;--dim:#76664f;--amber:#f0b44a;--accent:#9fe38f}
  *{box-sizing:border-box}
@@ -60,7 +60,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  #setup .link{font-family:var(--mono);font-size:12px}
  /* ---- setting up a new room */
  #setup{display:none;min-height:100vh;flex-direction:column;align-items:center;padding:5vh 20px 40px;background:var(--bg)}
- body.setup #game,body.setup header.hbar{display:none} body.setup #setup{display:flex}
+ body.setup #game,body.setup header.hbar,body.sett #game,body.sett header.hbar{display:none} body.setup #setup{display:flex}
+ #sett{display:none;min-height:100vh;flex-direction:column;align-items:center;padding:5vh 20px 40px;background:var(--bg)} body.sett #sett{display:flex} body.sett{display:block;height:auto;overflow:auto}
+ #sett .where{width:min(560px,100%);box-sizing:border-box;border:2px solid #000;box-shadow:4px 4px 0 #000;background:var(--panel);padding:14px 16px;margin-bottom:14px;font-family:var(--mono)}
+ #sett h3{margin:0 0 8px;font:700 12px var(--mono);color:var(--amber);letter-spacing:.1em;text-transform:uppercase} #sett label.t{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px;color:var(--text)} #sett .d{color:var(--dim);font-size:11px;margin:-3px 0 6px 26px} #sett input[type=range]{flex:1}
  .grid{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;max-width:980px}
  .card{position:relative;width:200px;padding:12px 12px 14px;background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;
   cursor:pointer;user-select:none;transition:transform .15s,border-color .15s,opacity .2s,filter .2s;box-shadow:0 8px 22px #0008}
@@ -104,6 +107,13 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  <button id="newbtn" title="Set up a new room">+ New room</button><div class="conn on" id="conn"><i></i><span>live on this computer</span></div></header>
 <div id="game"><canvas id="cv"></canvas><div id="labels"></div><div id="empty" style="display:none">No rooms yet. Step through the open door to set one up.</div>
  <div class="hint">click a door to step in · ← → or scroll to walk the corridor</div></div>
+<div id="sett"><h1>&#9881; Settings</h1><h2>How the room works</h2><p class="sub">Saved in this browser; every room picks them up when it opens.</p>
+<div class="where"><h3>Voice</h3>
+ <label class="t"><input type="checkbox" data-s="tts"> Read replies aloud</label><div class="d">Agents' replies are spoken with the local voices.</div>
+ <label class="t">Agents talking to each other <input type="range" id="avol" min="0" max="100" step="5"> <span id="avolv"></span></label><div class="d">Volume relative to speech addressed to you (100% = same as yours).</div></div>
+<div class="where"><h3>Sound</h3><label class="t"><input type="checkbox" data-s="sounds"> Acknowledgements and keyboard clicks</label></div>
+<div class="where"><h3>Input</h3><label class="t"><input type="checkbox" data-s="autosend"> Send voice messages automatically</label></div>
+<div class="bar"><span class="link" id="sback">&larr; Back to the corridor</span></div></div>
 <div id="setup"><h1>&#9679; New room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair, or use + chair to seat several of the same model.</p>
 <div class="grid" id="grid"></div>
 <div class="where">
@@ -212,12 +222,18 @@ drawWhere();
 // ---- the corridor: one wooden door per open room (3D, same style as the room), plus a door to a new one
 function openSetup(){buildCards();document.body.classList.add('setup');scrollTo(0,0);status('')}
 function closeSetup(){document.body.classList.remove('setup')}
+const SD={tts:0,sounds:1,autosend:0};
+function openSett(){document.body.classList.add('sett');scrollTo(0,0);
+ document.querySelectorAll('#sett [data-s]').forEach(c=>{const v=localStorage.getItem('mr_'+c.dataset.s);c.checked=v===null?!!SD[c.dataset.s]:v==='1';c.onchange=()=>localStorage.setItem('mr_'+c.dataset.s,c.checked?'1':'0')});
+ const r=$('avol'),v=localStorage.getItem('mr_agentvol');r.value=Math.round((v===null?.55:+v)*100);$('avolv').textContent=r.value+'%';
+ r.oninput=()=>{$('avolv').textContent=r.value+'%';localStorage.setItem('mr_agentvol',r.value/100)}}
+const closeSett=()=>document.body.classList.remove('sett');$('sback').onclick=closeSett;
 $('back').onclick=closeSetup;$('newbtn').onclick=openSetup;
-addEventListener('keydown',e=>{if(e.key==='Escape')closeSetup()});
+addEventListener('keydown',e=>{if(e.key==='Escape'){closeSetup();closeSett()}});
 let ROOMS=[],hall=null;
 try{const {createCorridor}=await import('/static/corridor3d.js');
  hall=createCorridor({wrap:$('game'),canvas:$('cv'),labels:$('labels'),
-  onPick:p=>p.kind==='new'?openSetup():location.href='/r/'+p.id+'/'+Q,
+  onPick:p=>p.kind==='new'?openSetup():p.kind==='settings'?openSett():location.href='/r/'+p.id+'/'+Q,
   onClose:async r=>{if(!confirm('Close "'+r.title+'"? Its agents stop and the minutes are saved.'))return;
    await fetch('/api/close/'+r.id+Q,{method:'POST',body:'{}'});refresh()}})}
 catch(e){$('empty').style.display='';$('empty').textContent='3D view unavailable ('+e.message+'). Use + New room.'}

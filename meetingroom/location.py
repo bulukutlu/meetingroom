@@ -95,7 +95,10 @@ def list_dirs(path: str, host: str | None = None) -> dict:
 def probe(host: str, path: str) -> dict:
     """Check an SSH target: reachable, folder exists, which agent CLIs are installed."""
     script = (f"cd -- {rpath(path)} 2>/dev/null && echo \"DIR=$(pwd)\"; echo \"HOME=$HOME\"; "
-              "for t in claude codex python3; do echo \"BIN_$t=$(command -v $t 2>/dev/null)\"; done")
+              "for t in claude codex python3; do p=$(command -v $t 2>/dev/null); "
+              # login shells skip ~/.bashrc, so npm/nvm installs (typical for codex) are missed: look in the usual places
+              "[ -z \"$p\" ] && for d in ~/.local/bin ~/.npm-global/bin ~/.volta/bin ~/.bun/bin ~/.nvm/versions/node/*/bin /usr/local/bin /opt/homebrew/bin; do "
+              "[ -x \"$d/$t\" ] && p=$d/$t && break; done; echo \"BIN_$t=$p\"; done")
     try:
         r = _ssh(host, script)
     except subprocess.TimeoutExpired:
@@ -197,5 +200,7 @@ class Location:
         env = (f"unset {drop_key}; export MR_URL=http://127.0.0.1:{self.rport}{self.url_base} MR_HOST=127.0.0.1:{hub_port} "
                f"MR_AGENT={shlex.quote(agent)} MR_UPLOAD=1 MCP_TOOL_TIMEOUT={24 * 3600 * 1000}; "
                "MR_TOKEN=$(cat ~/.meetingroom/token); export MR_TOKEN; ")
+        bindir = shlex.quote(str(Path(exe).parent)) if exe.startswith("/") else "."
+        env += f"export PATH={bindir}:$PATH; "   # npm/nvm shims need their sibling `node`
         script = f"cd -- {shlex.quote(self.path)} && {env}exec {shlex.join([exe, *args])}"
         return ["ssh", *SSH_OPTS, "-o", f"ControlPath={self.cp}", "-T", self.host, login_sh(script)]

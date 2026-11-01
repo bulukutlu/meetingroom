@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Meeting Room</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <style>
 :root{
   --bg:#120d09; --panel:#1b1510; --panel2:#241c15; --line:#352a1f; --line2:#46382a;
@@ -1135,10 +1136,10 @@ function setSpeaking(m) {
   if (m && room) room.say(m.from, plain(m.text).slice(0, 220), null);
 }
 function speak(m) { NQ.queue.push(m); if (!NQ.playing && !NQ.hold) playNext(); }
-// While you record (or your recording is being transcribed) narration is paused,
-// not dropped: it resumes, in order, once you're done. One message plays at a time.
+// Starting to record cuts off whatever is being read; replies that arrive while you
+// record or wait for transcription are held and play, in order, once you're done. One message plays at a time.
 const isRecording = () => !!(listening || W.starting || W.busy);
-function holdSpeech() { if (NQ.hold) return; NQ.hold = true; if (NQ.audio) NQ.audio.pause(); if (window.speechSynthesis) speechSynthesis.pause(); }
+function holdSpeech() { if (NQ.hold) return; stopSpeech(); NQ.hold = true; }   // barge-in: speaking over an agent cuts it off (it is not resumed)
 function releaseSpeech() {
   if (!NQ.hold) return; NQ.hold = false;
   if (window.speechSynthesis) speechSynthesis.resume();
@@ -1153,8 +1154,10 @@ function stopSpeech() {
   if (window.speechSynthesis) speechSynthesis.cancel();
   if (S.speaking) setSpeaking(null);
 }
-const playBlob = b => new Promise(res => {
-  const a = new Audio(URL.createObjectURL(b)); NQ.audio = a;
+const AGENT_VOL = (() => { try { const v = parseFloat(localStorage.getItem("mr_agentvol")); return v >= 0 && v <= 1 ? v : 0.55; } catch (e) { return 0.55; } })();   // agent-to-agent speech is quieter than speech addressed to the user
+const volFor = m => (m && m.to && m.to.length ? AGENT_VOL : 1);
+const playBlob = (b, vol = 1) => new Promise(res => {
+  const a = new Audio(URL.createObjectURL(b)); NQ.audio = a; a.volume = vol;
   a.onended = a.onerror = () => { URL.revokeObjectURL(a.src); res(); };
   a.play().catch(res);
 });
@@ -1175,7 +1178,7 @@ async function playNext() {
       const blob = await next; next = i + 1 < parts.length ? wav() : null;
       await waitHold(gen);
       if (gen !== NQ.gen) return;
-      if (blob) await playBlob(blob);
+      if (blob) await playBlob(blob, volFor(m));
       if (gen !== NQ.gen) return;
     }
   } catch (e) { /* skip this message */ }
@@ -1188,7 +1191,7 @@ function browserSpeak(m, done) {
   const u = new SpeechSynthesisUtterance(plain(m.text));
   const i = S.agents.findIndex(a => a.name === m.from);
   if (voices.length) u.voice = voices[Math.max(0, i) % voices.length];
-  u.onend = u.onerror = done;
+  u.volume = volFor(m); u.onend = u.onerror = done;
   speechSynthesis.speak(u);
 }
 

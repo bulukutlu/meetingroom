@@ -1,6 +1,6 @@
 # Meeting Room
 
-**v0.1.0** · A local, video-call style room where you hold a working meeting with
+**v0.5.0** · A local, video-call style room where you hold a working meeting with
 several AI agents at once: Claude Code, Codex and API models side by side. You
 address them with `@name`, by typing or by talking. They do real work on **your**
 computer (Python, shell, files), put plots, tables and HTML pages on a shared
@@ -42,7 +42,8 @@ When that works, set up real agents (section 2) and start:
 ./run.sh
 ```
 
-A picker page lets you choose who joins this meeting, then the room opens.
+You start in the **corridor** (section 4): a 3D hallway with one door per open room.
+Use the *New room* door to choose who joins and where they work.
 
 > Manual install:
 > `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python -m meetingroom run`
@@ -140,7 +141,7 @@ Key-free scripted agents for trying the UI (`./run.sh --demo`).
 ### Choosing who joins
 
 ```bash
-./run.sh                         # picker page in the browser
+./run.sh                         # corridor in the browser; open rooms from there
 ./run.sh --agents claude,codex   # skip the picker, start only these
 ./run.sh --all                   # everyone in agents.yaml
 ./run.sh --config other.yaml     # a different roster file
@@ -175,7 +176,20 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
 
 ---
 
-## 4. Using the room
+## 4. The corridor and settings
+
+- **Several rooms at once.** Each open room is a wooden door; the frosted glass shows who
+  sits inside and the lamp above shows its state (idle, busy, waiting for your approval).
+  Click a door to step in, ✕ closes a room (agents stop, minutes are saved). The room's
+  *Exit* door returns to the corridor and leaves the room running.
+- **New room** (right-hand door): pick the agents (several chairs per model are possible),
+  where they work (own folders, a project folder, or SSH) and an optional name for the door.
+- **Settings** (leftmost door): read replies aloud, the volume of agents talking to each
+  other, sounds, and automatic sending of voice messages. Saved in the browser and applied
+  by every room.
+- The corridor and room pages carry a small door icon as their tab favicon.
+
+## 5. Using the room
 
 - **Address agents:** `@claude fit the S-curves in ~/data/run512 and plot the
   threshold map`. `@all` addresses everyone. Agents can hand work to each other
@@ -183,10 +197,13 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
   an agent has `supervisor: true` in `agents.yaml`).
 - **Voice:** hold `Space` to talk (push-to-talk) or press `Ctrl+Space` / the mic
   to toggle. Starting with a name ("Claude, can you…") becomes `@claude`.
-  `S` stops the current read-aloud.
+  `S` stops the current read-aloud. **Barge-in:** as soon as you start talking, whatever
+  is being read aloud stops and is dropped; replies that arrive while you speak are read afterwards.
 - **Approvals:** with `approval: ask`, every command or out-of-folder file access
   appears as a card showing the full command. Choose *Run it* or *Always for X*,
   or flip the tile toggle to auto-run. *Stop* / *Stop all* kill running work.
+- **Voice levels:** speech between agents (an agent @-mentioning another) is read quieter than
+  speech addressed to you. Adjust it under *Settings*.
 - **Effort:** change an agent's reasoning effort live from its tile.
 - **Shared screen:** plots (PNG/SVG), PDFs, markdown, CSV tables and sandboxed HTML pages.
 - **Marking the screen:** press `M` (or *✎ Mark*) and point at part of what is shown:
@@ -219,7 +236,7 @@ The start page asks where the work happens:
 Without the picker: `./run.sh --project ~/analysis` or `./run.sh --ssh mybox --project ~/work`.
 The header in the room shows the active location.
 
-## 5. Security
+## 6. Security
 
 - **Nothing is hosted.** The server binds to `127.0.0.1` only; non-localhost
   `Host` headers are rejected (blocks DNS rebinding).
@@ -234,12 +251,12 @@ The header in the room shows the active location.
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | `Claude Code not found` | Set `claude_path:` for that agent (see `which claude`). |
-| `Codex CLI not found` | Set `codex_path:` (see `which codex`). |
+| `Codex CLI not found` | Set `codex_path:` (see `which codex`). Over SSH, set `remote_codex_path:` if Codex lives somewhere a login shell doesn't see; *Test* on the host shows what was found. |
 | No approval cards for Claude Code | Your Claude Code default is probably `bypassPermissions`; set `permission_mode: default`. |
 | `no openai API key` | `./run.sh set-key openai` |
 | Mic does nothing | Allow microphone access in the browser; the first Whisper start is slow (model download). |
@@ -249,7 +266,7 @@ The header in the room shows the active location.
 
 ---
 
-## 7. Project layout
+## 8. Project layout
 
 ```
 agents.yaml              participants and settings (no secrets)
@@ -262,15 +279,22 @@ meetingroom/
   agents.py              agent loop; claude-code / codex / anthropic / openai / mock backends
   mcp_bridge.py          MCP server giving CLI agents approvals + share_to_screen
   tools.py               built-in tools for API agents
-  picker.py              start-up participant picker
+  picker.py              the corridor page: room doors, settings, new-room setup
   stt.py, tts.py         local Whisper transcription, Kokoro narration
   minutes.py             details.jsonl + minutes.md
   keys.py                OS keychain access
-  static/                room UI (index.html, room3d.js, faces, three.js)
+  static/                room UI (index.html, room3d.js), corridor3d.js, favicon, faces, three.js
 tools/make_faces.py      turn portrait photos into character faces
 ```
 
 ## Changelog
+
+- **0.5.0** (2026-11-01): settings door and screen in the corridor; agent-to-agent speech
+  plays quieter (adjustable); barge-in stops read-aloud when you start talking; Codex over
+  SSH is found in npm/nvm locations; tab favicon.
+- **0.4.0**: corridor with one door per room, several rooms running at once.
+- **0.3.0**: marking the shared screen (text, boxes, PDF text) and sending marks to agents.
+- **0.2.x**: local-only fixes and polish, SSH/project-folder locations.
 
 - **0.1.0** (2026-10-31): first release. Claude Code, Codex, Anthropic and OpenAI
   agents; 3D room; approval cards; shared screen; local Whisper voice input and

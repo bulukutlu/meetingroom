@@ -246,6 +246,8 @@ class Room:
             limit = MAX_HOPS_SUPERVISED
         if kind == "msg" and hop <= limit:
             for a in targets:
+                if sender.lower() in self.agents:
+                    a.requesters.add(sender.lower())   # who handed this work over; they must be answered by name
                 a.queue.put_nowait(hop)
         return m
 
