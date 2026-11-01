@@ -278,6 +278,8 @@ How the meeting works:
                 self.current = None
                 self.turn_id = None
                 try:
+                    from .saved import checkpoint
+                    checkpoint(self.room)
                     await asyncio.to_thread(build_minutes, self.room.session_dir)
                 except Exception:
                     pass
@@ -286,7 +288,33 @@ How the meeting works:
         if self.current and not self.current.done():
             self.current.cancel()
 
+    def _attachment_line(self, att: dict) -> str:
+        """A file the user attached. Local agents get a copy inside their workspace (no approval needed to read it);
+        remote (SSH) agents can't see this computer's disk, so text files are inlined and the rest is reported."""
+        src = Path(att["path"])
+        if self.remote:
+            if att.get("image") or att["size"] > 200_000:
+                return f"  (attached {att['name']}, {att['size']} bytes: not available over SSH; ask {self.room.user} to describe or paste it)"
+            try:
+                text = src.read_text(encoding="utf-8")
+            except Exception:
+                return f"  (attached {att['name']}: binary file, not available over SSH)"
+            return f"  --- attached file {att['name']} ---\n{text}\n  --- end of {att['name']} ---"
+        try:
+            dest = self.workdir / "attachments" / f"{att['id']}_{att['name']}"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.exists():
+                shutil.copyfile(src, dest)
+            path = dest
+        except Exception:
+            path = src
+        kind = "image" if att.get("image") else "file"
+        return f"  [attached {kind}: {path}  ({att['size']} bytes) - read it with your file tools]"
+
     def _gather_context(self) -> str:
+        if getattr(self, "recovery_context", ""):
+            self.pending_context = self.recovery_context + self.pending_context
+            self.recovery_context = ""
         new = self.room.messages[self.seen:]
         self.seen = len(self.room.messages)
         lines = []
@@ -297,6 +325,8 @@ How the meeting works:
             lines.append(f"[{t}] {m['from']}: {m['text']}")
             for an in m.get("anchors") or []:   # marks on the shared screen: text verbatim, visuals as a small crop
                 lines.append(annotate.describe(an))
+            for att in m.get("attachments") or []:
+                lines.append(self._attachment_line(att))
         if lines:
             self.pending_context += "\n".join(lines) + "\n"
         return self.pending_context

@@ -184,6 +184,15 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
   *Exit* door returns to the corridor and leaves the room running.
 - **New room** (right-hand door): pick the agents (several chairs per model are possible),
   where they work (own folders, a project folder, or SSH) and an optional name for the door.
+- **Previous meeting** is the fourth option under New room. Choose a saved room to
+  restore its participants, roles, settings, transcript, attachments and shared screen.
+  Close room / Quit asks whether to save status for later (Quit applies to all rooms).
+  Native CLI session IDs and local API conversation history are retained; the transcript
+  is also supplied when an agent is next addressed. Interrupted tasks and approvals are
+  not replayed automatically. SSH rooms reconnect to the original host and folder.
+  Atomic recovery checkpoints also survive an unexpected app exit. Rooms closed without
+  saving keep their minutes but disappear from the resume list. Older meetings without
+  a checkpoint can still be read through their minutes.
 - **Settings** (leftmost door): read replies aloud, the volume of agents talking to each
   other, sounds, and automatic sending of voice messages. Saved in the browser and applied
   by every room.
@@ -217,6 +226,10 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
 - **Records:** each meeting gets `~/MeetingRoom/meetings/<session>/` with
   `transcript.jsonl`, `details.jsonl` (every tool call behind the scenes),
   `minutes.md` (kept up to date automatically) and `shared/` (every file shown).
+  `room.json` stores resumable state locally with owner-only permissions; it excludes
+  configured credentials and live connection tokens. Keep the whole session folder
+  and project files to preserve attachments and shared artifacts. CLI histories also
+  depend on the original machine's CLI storage (or the original SSH host).
   Rebuild minutes of an old session: `./run.sh minutes ~/MeetingRoom/meetings/<session>`.
 
 ---
@@ -291,7 +304,9 @@ tools/make_faces.py      turn portrait photos into character faces
 
 - **0.5.0** (2026-11-01): settings door and screen in the corridor; agent-to-agent speech
   plays quieter (adjustable); barge-in stops read-aloud when you start talking; Codex over
-  SSH is found in npm/nvm locations; tab favicon.
+  SSH is found in npm/nvm locations; tab favicon. Saved meetings and atomic recovery
+  checkpoints restore participants, conversation, attachments and the shared screen;
+  attach files by picking, dropping or pasting them; sharper PDF rendering.
 - **0.4.0**: corridor with one door per room, several rooms running at once.
 - **0.3.0**: marking the shared screen (text, boxes, PDF text) and sending marks to agents.
 - **0.2.x**: local-only fixes and polish, SSH/project-folder locations.

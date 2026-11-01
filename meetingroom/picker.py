@@ -118,7 +118,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
 <div class="grid" id="grid"></div>
 <div class="where">
  <h3>Where does the meeting take place?</h3>
- <div class="seg" id="seg"><button data-k="default">Agents' own folders</button><button data-k="local">Project folder</button><button data-k="ssh">Remote over SSH</button></div>
+ <div class="seg" id="seg"><button data-k="default">Agents' own folders</button><button data-k="local">Project folder</button><button data-k="ssh">Remote over SSH</button><button data-k="saved">Previous meeting</button></div>
+ <div id="wSaved" style="display:none"><div class="note">Reopen a saved meeting or recover one interrupted by a restart. Its participants, project, conversation and shared screen are restored.</div><div id="savedRooms" style="display:grid;gap:8px;margin-top:12px"></div></div>
  <div id="wDefault" class="note">Each agent works in its own folder under the meeting workspace, as before.</div>
  <div class="wrow" id="wHost"><label>Host</label><input id="host" list="hosts" placeholder="ssh alias or user@server" autocomplete="off" spellcheck="false"><button class="wbtn" id="test">Test</button></div>
  <datalist id="hosts"></datalist>
@@ -189,14 +190,37 @@ $('hosts').innerHTML=HOSTS.map(h=>'<option value="'+esc(h)+'">').join('');
 $('host').value=W.host;$('path').value=W.path;
 function status(t,c){$('wst').textContent=t||'';$('wst').className='wst '+(c||'')}
 function drawWhere(){
+ const recovering=W.kind==='saved';
+ $('wSaved').style.display=recovering?'':'none';
+ $('grid').style.display=recovering?'none':'';
+ $('all').style.display=recovering?'none':'';
+ $('go').style.display=recovering?'none':'';
+ $('rname').closest('.where').style.display=recovering?'none':'';
+ document.querySelector('#setup h2').textContent=recovering?'Continue a previous meeting':'Who joins this meeting?';
+ document.querySelector('#setup p.sub').style.display=recovering?'none':'';
+ if(recovering)loadSaved();
  [...$('seg').children].forEach(b=>b.classList.toggle('on',b.dataset.k===W.kind));
  $('wDefault').style.display=W.kind==='default'?'':'none';$('wHost').style.display=W.kind==='ssh'?'':'none';
- $('wPath').style.display=W.kind==='default'?'none':'';if(W.kind==='default')$('browser').style.display='none';
+ $('wPath').style.display=W.kind==='default'||recovering?'none':'';if(W.kind==='default'||recovering)$('browser').style.display='none';
  $('path').placeholder=W.kind==='ssh'?'~ (remote home) or /path/on/server':'~/projects/analysis';
  const rec=(JSON.parse(localStorage.getItem(RKEY)||'[]')).filter(r=>r.kind===W.kind);
  $('recent').innerHTML=rec.map((r,i)=>'<span data-r="'+i+'" title="Use this again">'+esc(r.kind==='ssh'?r.host+':'+r.path:r.path)+'</span>').join('');
  $('recent').onclick=e=>{const t=e.target.closest('[data-r]');if(!t)return;const r=rec[+t.dataset.r];
   $('path').value=r.path;$('host').value=r.host||'';status('');$('browser').style.display='none'};
+}
+async function loadSaved(){
+ const box=$('savedRooms');box.textContent='Loading saved meetings…';
+ try{
+  const r=await fetch('/api/saved'+Q);if(!r.ok)throw Error('Could not load saved meetings');
+  const rooms=(await r.json()).rooms;
+  box.textContent=rooms.length?'':'No saved meetings yet. Close a room and choose to save it for later.';
+  rooms.forEach(room=>{const b=document.createElement('button');b.className='wbtn';b.style.cssText='text-align:left;white-space:normal';
+   b.textContent=room.title+' · '+new Date(room.updated*1000).toLocaleString()+' · '+room.agents.map(n=>'@'+n).join(', ')+(room.status==='recovery'?' · recovery checkpoint':'');
+   b.onclick=async()=>{box.querySelectorAll('button').forEach(x=>x.disabled=true);status('Reopening meeting…');
+    try{const res=await fetch('/api/restore'+Q,{method:'POST',body:JSON.stringify({session:room.id})});const j=await res.json();if(!res.ok)throw Error(j.error||'Could not reopen meeting');location.href=j.url}
+    catch(e){status(e.message,'bad');box.querySelectorAll('button').forEach(x=>x.disabled=false)}};
+   box.append(b)});
+ }catch(e){box.textContent=e.message}
 }
 $('seg').onclick=e=>{const b=e.target.closest('[data-k]');if(b){W.kind=b.dataset.k;status('');drawWhere()}};
 const where=()=>({kind:W.kind,path:$('path').value.trim(),host:W.kind==='ssh'?$('host').value.trim():''});
@@ -220,7 +244,7 @@ $('test').onclick=async()=>{const w=where();if(!w.host)return status('Enter a ho
 drawWhere();
 
 // ---- the corridor: one wooden door per open room (3D, same style as the room), plus a door to a new one
-function openSetup(){buildCards();document.body.classList.add('setup');scrollTo(0,0);status('')}
+function openSetup(){buildCards();document.body.classList.add('setup');scrollTo(0,0);status('');drawWhere()}
 function closeSetup(){document.body.classList.remove('setup')}
 const SD={tts:0,sounds:1,autosend:0};
 function openSett(){document.body.classList.add('sett');scrollTo(0,0);
@@ -234,8 +258,9 @@ let ROOMS=[],hall=null;
 try{const {createCorridor}=await import('/static/corridor3d.js');
  hall=createCorridor({wrap:$('game'),canvas:$('cv'),labels:$('labels'),
   onPick:p=>p.kind==='new'?openSetup():p.kind==='settings'?openSett():location.href='/r/'+p.id+'/'+Q,
-  onClose:async r=>{if(!confirm('Close "'+r.title+'"? Its agents stop and the minutes are saved.'))return;
-   await fetch('/api/close/'+r.id+Q,{method:'POST',body:'{}'});refresh()}})}
+  onClose:async r=>{if(!confirm('Close "'+r.title+'"? Its agents will stop.'))return;
+   const save=confirm('Save this meeting’s status for later? OK saves participants, conversation and shared screen. Cancel closes without a resumable save; minutes are kept.');
+   const res=await fetch('/api/close/'+r.id+Q,{method:'POST',body:JSON.stringify({save})});if(!res.ok)alert('Could not close and save the meeting. Please try again.');refresh()}})}
 catch(e){$('empty').style.display='';$('empty').textContent='3D view unavailable ('+e.message+'). Use + New room.'}
 async function refresh(){
  const c=$('conn');

@@ -228,6 +228,10 @@ textarea:focus{border-color:#5d4a35}
 .mchip{display:inline-flex;align-items:center;gap:6px;max-width:420px;background:#2a2012;border:1px solid #6b5222;padding:2px 4px 2px 8px;font:12px var(--mono);color:#ffe2a8;cursor:pointer}
 .mchip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mchip button{padding:0 5px;border:0;background:none;color:var(--muted);font-size:12px}
+.achip{display:inline-flex;align-items:center;gap:6px;max-width:320px;background:#12202a;border:1px solid #2f5a78;padding:2px 4px 2px 8px;font:12px var(--mono);color:#bfe3ff}
+.achip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.achip button{padding:0 5px;border:0;background:none;color:var(--muted);font-size:12px}
+#attach{width:42px;height:42px;display:grid;place-items:center;padding:0;flex:none;border-radius:0;border:2px solid #000;font-size:17px}
+footer.drop{outline:2px dashed var(--amber);outline-offset:-4px}
 .anc{display:block;margin-top:4px;border-left:3px solid var(--amber);padding:2px 8px;background:#0e0a07;font:12px var(--mono);color:var(--muted);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .anc:hover{color:var(--text)}
 </style>
@@ -287,8 +291,10 @@ textarea:focus{border-color:#5d4a35}
   <button class="mic" id="mic" title="Hold to talk (or hold Space)">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
   </button>
+  <button id="attach" title="Attach files (or drop / paste them here)">&#128206;</button><input type="file" id="files" multiple hidden>
   <div class="inp">
     <div class="suggest" id="suggest"></div>
+    <div class="marks" id="atts"></div>
     <div class="replyhint" id="replyHint"></div>
     <div class="marks" id="marks"></div>
     <textarea id="box" rows="1" placeholder="Talk to the room. Name an agent (anywhere) to give it a task, or say everyone."></textarea>
@@ -490,6 +496,7 @@ function handle(ev) {
       if (S.shared.length) show(S.shared[S.shared.length - 1].id, false);
       break;
     case "bye": showEnded(ev.minutes, ev.next); break;
+    case "close_error": ended = false; alert(ev.error); break;
     case "agent": {
       const prev = (S.agents.find(a => a.name === ev.agent.name) || {}).status;
       if (ev.agent.status === "thinking" && (prev === "idle" || prev === undefined)) acknowledge(ev.agent.name);
@@ -638,6 +645,7 @@ function endMeeting() {
       <div style="font-size:19px;font-weight:600;margin-bottom:6px">Leave this room?</div>
       <div style="color:#a8977f;margin-bottom:16px"><b style="color:#efe6d6">Corridor</b> keeps this room running (agents keep working) so you can come back through its door.
         <b style="color:#efe6d6">Close room</b> stops its agents and saves the minutes. <b style="color:#efe6d6">Quit</b> closes every room and the app.</div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:16px"><input id="saveMeeting" type="checkbox" checked>Save meeting status for later (all rooms when quitting). Reopen from New room → Previous meeting.</label>
       <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
         <button data-x="cancel" style="${btn};background:#2e241b;color:#efe6d6">Cancel</button>
         <button data-x="quit" style="${btn};background:#5a2620;color:#efe6d6">Quit the app</button>
@@ -652,7 +660,7 @@ function endMeeting() {
     if (e.target === d || k === "cancel") return close();
     if (k === "lobby") { stopSpeech && stopSpeech(); location.href = LOBBY(); return; }
     if (k === "quit" && !confirm("Close every room and quit the app?")) return;
-    if (k === "quit" || k === "close") { close(); ended = true; send({ type: k === "close" ? "close_room" : "quit" }); }
+    if (k === "quit" || k === "close") { const save=d.querySelector('#saveMeeting').checked; close(); ended = true; send({ type: k === "close" ? "close_room" : "quit", save }); }
   };
   d.querySelector('[data-x="lobby"]').focus();
 }
@@ -680,7 +688,7 @@ function msgHtml(m) {
   const to = m.to && m.to.length ? ` → ${m.to.map(personOf).map(esc).join(", ")}` : "";
   return `<div class="msg ${esc(m.kind)}"><div class="mav" style="background:${esc(c)}">${esc((personOf(m.from)[0] || "?").toUpperCase())}</div>
     <div class="body"><div class="line1"><b>${esc(personOf(m.from))}</b>${S.agents.some(a => a.name === m.from) ? `<em style="font-weight:400;font-style:normal;opacity:.5;margin-left:5px">@${esc(m.from)}</em>` : ""}<span>${hhmm(m.ts)}${to}</span></div>
-    <div class="txt">${md(m.text)}</div>${(m.anchors || []).map(a => `<div class="anc" data-anc="${esc(a.id)}" data-item="${esc(a.item)}" title="Show this mark">📌 ${esc(anchorLabel(a))}</div>`).join("")}</div></div>`;
+    <div class="txt">${md(m.text)}</div>${(m.attachments || []).map(a => `<div class="anc" style="cursor:default" title="${esc(a.path)}">${a.image ? "🖼" : "📎"} ${esc(a.name)}</div>`).join("")}${(m.anchors || []).map(a => `<div class="anc" data-anc="${esc(a.id)}" data-item="${esc(a.item)}" title="Show this mark">📌 ${esc(anchorLabel(a))}</div>`).join("")}</div></div>`;
 }
 function renderLog() { $("log").innerHTML = S.messages.map(msgHtml).join(""); $("log").scrollTop = 1e9; count(); }
 function appendMsg(m) {
@@ -937,9 +945,37 @@ addEventListener("message", e => {
 const box = $("box"), sug = $("suggest"), PLACEHOLDER = box.placeholder;
 let sugItems = [], sugSel = 0;
 function autosize() { box.style.height = "auto"; box.style.height = Math.min(160, box.scrollHeight) + "px"; }
+// ---- attachments: uploaded as soon as they are picked, sent along with the next message
+const ATT = { list: [], busy: 0 };
+function renderAtts() {
+  const el = $("atts"); el.style.display = ATT.list.length || ATT.busy ? "flex" : "none";
+  el.innerHTML = ATT.list.map((a, i) => `<span class="achip" title="${esc(a.name)}"><b>${a.image ? "🖼" : "📎"}</b><span>${esc(a.name)}</span><button data-unatt="${i}" title="Remove">✕</button></span>`).join("")
+    + (ATT.busy ? `<span class="achip"><span>uploading…</span></span>` : "");
+}
+async function attachFiles(files) {
+  for (const f of files) {
+    ATT.busy++; renderAtts();
+    try {
+      const r = await fetch(`${BASE}/attach?${qT()}`, { method: "POST", headers: { "x-filename": encodeURIComponent(f.name || "pasted.png") }, body: f });
+      if (!r.ok) throw new Error((await r.text()) || r.status);
+      ATT.list.push(await r.json());
+    } catch (e) { alert(`Could not attach ${f.name}: ${e.message}`); }
+    ATT.busy--; renderAtts();
+  }
+}
+$("attach").onclick = () => $("files").click();
+$("files").onchange = e => { attachFiles([...e.target.files]); e.target.value = ""; };
+$("atts").addEventListener("click", e => { const b = e.target.closest("[data-unatt]"); if (b) { ATT.list.splice(+b.dataset.unatt, 1); renderAtts(); } });
+const foot = document.querySelector("footer");
+foot.addEventListener("dragover", e => { if ([...(e.dataTransfer?.types || [])].includes("Files")) { e.preventDefault(); foot.classList.add("drop"); } });
+foot.addEventListener("dragleave", () => foot.classList.remove("drop"));
+foot.addEventListener("drop", e => { foot.classList.remove("drop"); if (e.dataTransfer?.files?.length) { e.preventDefault(); attachFiles([...e.dataTransfer.files]); } });
+box.addEventListener("paste", e => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); attachFiles(fs); } });
 function submit() {
-  const t = box.value.trim(), ids = MK.pending.map(a => a.id); if (!t && !ids.length) return;
-  send({ type: "say", text: t, anchors: ids }); box.value = ""; autosize(); hideSug();
+  const t = box.value.trim(), ids = MK.pending.map(a => a.id), atts = ATT.list.map(a => a.id); if (!t && !ids.length && !atts.length) return;
+  if (ATT.busy) return;
+  send({ type: "say", text: t, anchors: ids, attachments: atts }); box.value = ""; autosize(); hideSug();
+  if (atts.length) { ATT.list = []; renderAtts(); }
   if (ids.length) { MK.pending = []; renderChips(); drawMarks(); }
   if (room && room.focused && /@/.test(t)) { room.setFocus(false); syncFocusBtn(); }   // new task: back to the room
 }

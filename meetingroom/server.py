@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import annotate
+from . import annotate, saved
 from .agents import Agent, assign_people
 from .location import Location
 from .minutes import Recorder, build as build_minutes
@@ -77,7 +77,7 @@ def permission_summary(tool: str, inp: dict) -> str:
 
 
 class Room:
-    def __init__(self, cfg: dict, port: int = 0, token: str = "", rid: str = "", title: str = ""):
+    def __init__(self, cfg: dict, port: int = 0, token: str = "", rid: str = "", title: str = "", session: str = ""):
         self.cfg = cfg
         self.port = port
         self.token = token
@@ -89,8 +89,8 @@ class Room:
         self.user: str = cfg.get("user_name", "You")
         self.python: str = cfg.get("python") or "python3"
         self.workspace = Path(cfg["workspace"]).expanduser().resolve()
-        self.session = time.strftime("%Y%m%d-%H%M%S")
-        if (self.workspace / "meetings" / self.session).exists():   # two rooms opened in the same second
+        self.session = session or time.strftime("%Y%m%d-%H%M%S")
+        if not session and (self.workspace / "meetings" / self.session).exists():   # two rooms opened in the same second
             self.session += f"-{self.rid}"
         self.session_dir = self.workspace / "meetings" / self.session
         self.shared_dir = self.session_dir / "shared"
@@ -101,6 +101,7 @@ class Room:
         self.shared: list[dict] = []
         self.files: dict[str, Path] = {}
         self.anchors: dict[str, dict] = {}   # marks you made on the shared screen
+        self.attachments: dict[str, dict] = {}   # files you attached to messages (id -> info)
         self.marks_dir = self.session_dir / "marks"
         self.clients: set[WebSocket] = set()
         self.approvals: dict[str, dict] = {}
@@ -177,7 +178,7 @@ class Room:
         self.tasks = [asyncio.create_task(a.run_forever()) for a in self.agents.values()]
         self.tasks += [asyncio.create_task(self.load_stt()), asyncio.create_task(self.load_tts())]
 
-    async def shutdown(self, next_page: str | None = None):
+    async def shutdown(self, next_page: str | None = None, save: bool = True):
         """Stop the agents, write the minutes, say goodbye to open pages, drop the SSH session."""
         self.msg_audio.close()
         for a in self.agents.values():
@@ -186,6 +187,7 @@ class Room:
             t.cancel()
         if self.tasks:
             await asyncio.wait(self.tasks, timeout=5)
+        saved.checkpoint(self, "saved" if save else "discarded")
         minutes = await asyncio.to_thread(_minutes_summary, self)
         if next_page is not None:
             await self.broadcast({"type": "bye", "minutes": minutes, "next": next_page})
@@ -203,7 +205,7 @@ class Room:
 
     # ---------------- messages & routing
     async def post(self, sender: str, text: str, kind: str = "msg", hop: int = 0, turn: str | None = None,
-                   anchors: list[dict] | None = None) -> dict:
+                   anchors: list[dict] | None = None, attachments: list[dict] | None = None) -> dict:
         if sender.lower() in self.agents:
             # Agents only wake others by a deliberate handoff: the message must
             # START with @name(s). Passing mentions never trigger anyone.
@@ -235,9 +237,12 @@ class Room:
             m["turn"] = turn
         if anchors:
             m["anchors"] = anchors
+        if attachments:
+            m["attachments"] = attachments
         self.messages.append(m)
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(m) + "\n")
+        saved.checkpoint(self)
         if kind == "msg" and self.narrate and self.tts.status == "ready" and sender.lower() in self.agents:
             self.msg_audio.start(m["id"], text, sender)   # start voicing before the page even asks
         await self.broadcast({"type": "message", "message": m})
@@ -301,6 +306,7 @@ class Room:
         self.shared.append(item)
         self.recorder.write(agent.name, "share", source or str(path), turn=getattr(agent, "turn_id", None), title=title,
                            copy=f"shared/{dest.name}")
+        saved.checkpoint(self)
         await self.broadcast({"type": "shared", "item": item})
         return f"'{name}' is now on the shared screen."
 
@@ -391,6 +397,7 @@ def room_app(room: Room, hub) -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=400)
         room.anchors[a["id"]] = a
+        saved.checkpoint(room)
         return a
 
     @app.post("/stt")
@@ -411,6 +418,27 @@ def room_app(room: Room, hub) -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=503)
         return {"text": text}
+
+    @app.post("/attach")
+    async def attach(request: Request, t: str | None = None):
+        # A file the user attaches to a message: saved in the session, then handed to the agents by path.
+        check_token(t)
+        if request.headers.get("origin") not in allowed_origins:
+            raise HTTPException(403, "bad origin")
+        body = await request.body()
+        if len(body) > 50 * 1024 * 1024:
+            raise HTTPException(413, "file too large (50 MB max)")
+        room: Room = room_holder["room"]
+        name = re.sub(r"[^\w.\- ]", "_", Path(unquote(request.headers.get("x-filename", "file"))).name)[:120] or "file"
+        aid = uuid.uuid4().hex[:8]
+        dest = room.session_dir / "attachments"
+        dest.mkdir(parents=True, exist_ok=True)
+        path = dest / f"{aid}_{name}"
+        path.write_bytes(body)
+        room.attachments[aid] = {"id": aid, "name": name, "size": len(body), "path": str(path),
+                                 "image": name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))}
+        saved.checkpoint(room)
+        return room.attachments[aid]
 
     @app.post("/tts/plan")
     async def tts_plan(request: Request, t: str | None = None):
@@ -524,11 +552,12 @@ def room_app(room: Room, hub) -> FastAPI:
             while True:
                 ev = json.loads(await websocket.receive_text())
                 typ = ev.get("type")
-                if typ == "say" and (ev.get("text", "").strip() or ev.get("anchors")):
+                if typ == "say" and (ev.get("text", "").strip() or ev.get("anchors") or ev.get("attachments")):
                     anchors = [room.anchors[i] for i in ev.get("anchors") or [] if i in room.anchors]
-                    text = ev.get("text", "").strip() or ("Look at this." if anchors else "")
+                    atts = [room.attachments[i] for i in ev.get("attachments") or [] if i in room.attachments]
+                    text = ev.get("text", "").strip() or ("Look at this." if anchors or atts else "")
                     if text:
-                        await room.post(room.user, text, anchors=anchors or None)
+                        await room.post(room.user, text, anchors=anchors or None, attachments=atts or None)
                 elif typ == "approve":
                     room.resolve_approval(ev.get("id", ""), ev.get("decision", "no"))
                 elif typ == "stop":
@@ -539,21 +568,23 @@ def room_app(room: Room, hub) -> FastAPI:
                     for a in room.agents.values():
                         a.stop()
                 elif typ == "quit":
-                    asyncio.create_task(hub.quit())   # every room: minutes, goodbye page; then the process ends
+                    asyncio.create_task(hub.quit(save=ev.get("save", True) is not False))
                 elif typ == "close_room":
-                    asyncio.create_task(hub.close_room(room.rid, next_page="lobby"))
+                    asyncio.create_task(hub.close_room(room.rid, next_page="lobby", save=ev.get("save", True) is not False))
                 elif typ == "prefs":
                     room.narrate = bool(ev.get("narrate"))
                 elif typ == "set_approval":
                     a = room.agents.get(str(ev.get("agent", "")).lower())
                     if a and ev.get("mode") in ("ask", "auto"):
                         a.approval = ev["mode"]
+                        saved.checkpoint(room)
                         await room.broadcast({"type": "agent", "agent": a.public()})
                 elif typ == "set_effort":
                     a = room.agents.get(str(ev.get("agent", "")).lower())
                     lvl = str(ev.get("effort") or "")
                     if a and (lvl == "" or lvl in a.public()["efforts"]):
                         a.effort = lvl
+                        saved.checkpoint(room)
                         await room.broadcast({"type": "agent", "agent": a.public()})
         except WebSocketDisconnect:
             pass
@@ -575,6 +606,8 @@ class Hub:
         self.allowed_origins = {f"http://{h}" for h in self.allowed_hosts}
         self.app: FastAPI | None = None
         self._quitting = False
+        self._restoring: set[str] = set()
+        self._closing: set[str] = set()
 
     def check_token(self, t: str | None):
         if not t or not secrets.compare_digest(t, self.token):
@@ -583,7 +616,8 @@ class Hub:
     def room_url(self, rid: str) -> str:
         return f"/r/{rid}/?t={self.token}"
 
-    async def open_room(self, names: list[str], loc: Location, title: str = "", rid: str = "") -> Room:
+    async def open_room(self, names: list[str], loc: Location, title: str = "", rid: str = "",
+                        session: str = "", state: dict | None = None) -> Room:
         """Seat the chosen agents in a new room at `loc` (connecting over SSH first if needed)."""
         from .agents import expand_agents
         rid = rid or uuid.uuid4().hex[:6]
@@ -592,9 +626,14 @@ class Hub:
             await asyncio.to_thread(loc.connect, self.port, self.token, rid)
         n = len(self.rooms) + 1
         title = (title or "").strip()[:60] or (Path(loc.path).name if loc.path else "") or f"Room {n}"
-        cfg = {**self.cfg, "agents": expand_agents(self.cfg["agents"], names), "location": loc}
+        specs = ([{k: v for k, v in a["spec"].items() if k in saved.SPEC_KEYS}
+                  for a in state["agents"]] if state else expand_agents(self.cfg["agents"], names))
+        cfg = {**self.cfg, "agents": specs, "location": loc}
         try:
-            room = Room(cfg, self.port, self.token, rid=rid, title=title)
+            room = Room(cfg, self.port, self.token, rid=rid, title=title, session=session)
+            if state:
+                saved.restore(room, state)
+            saved.checkpoint(room)
         except Exception:
             loc.close()
             raise
@@ -608,22 +647,31 @@ class Hub:
               + (f"  ·  {loc.label()}" if loc.label() else "") + ("  (over SSH)" if loc.remote else ""), flush=True)
         return room
 
-    async def close_room(self, rid: str, next_page: str | None = None):
-        room = self.rooms.pop(rid, None)
-        if not room:
+    async def close_room(self, rid: str, next_page: str | None = None, save: bool = True):
+        room = self.rooms.get(rid)
+        if not room or rid in self._closing:
             return
-        m = self.mounts.pop(rid, None)
+        self._closing.add(rid)
         try:
-            await room.shutdown(next_page)
-        finally:
+            await room.shutdown(next_page, save=save)
+            self.rooms.pop(rid, None)
+            m = self.mounts.pop(rid, None)
             if m in self.app.router.routes:
                 self.app.router.routes.remove(m)
+        except Exception as e:
+            await room.broadcast({"type": "close_error", "error": f"Could not save and close the meeting: {e}. Free disk space and try again."})
+            raise
+        finally:
+            self._closing.discard(rid)
 
-    async def quit(self):
+    async def quit(self, save: bool = True):
         if self._quitting:
             return
         self._quitting = True
-        await asyncio.gather(*(self.close_room(rid, next_page="end") for rid in list(self.rooms)), return_exceptions=True)
+        results = await asyncio.gather(*(self.close_room(rid, next_page="end", save=save) for rid in list(self.rooms)), return_exceptions=True)
+        if any(isinstance(r, BaseException) for r in results) or self.rooms:
+            self._quitting = False
+            return
         asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGINT)   # graceful uvicorn shutdown
 
 
@@ -687,6 +735,35 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
         hub.check_token(t)
         return {"rooms": [r.lobby_info() for r in hub.rooms.values()]}
 
+    @app.get("/api/saved")
+    async def saved_rooms(t: str | None = None):
+        hub.check_token(t)
+        root = Path(cfg["workspace"]).expanduser().resolve() / "meetings"
+        return {"rooms": saved.list_saved(root, {r.session for r in hub.rooms.values()})}
+
+    @app.post("/api/restore")
+    async def restore_room(request: Request, t: str | None = None):
+        b = await lobby_body(request, t)
+        session = str(b.get("session") or "")
+        existing = next((r for r in hub.rooms.values() if r.session == session), None)
+        if existing:
+            return {"url": hub.room_url(existing.rid)}
+        if session in hub._restoring:
+            return JSONResponse({"error": "This meeting is already being reopened. Try again shortly."}, status_code=409)
+        hub._restoring.add(session)
+        try:
+            root = Path(cfg["workspace"]).expanduser().resolve() / "meetings"
+            state = saved.read(root, session)
+            loc = Location.from_dict(state["location"])
+            if err := await asyncio.to_thread(loc.validate):
+                raise ValueError(err)
+            room = await hub.open_room([], loc, title=state["title"], session=session, state=state)
+            return {"url": hub.room_url(room.rid)}
+        except Exception as e:
+            return JSONResponse({"error": f"Could not reopen meeting: {e}"}, status_code=400)
+        finally:
+            hub._restoring.discard(session)
+
     @app.post("/ls")
     async def ls(request: Request, t: str | None = None):
         from .location import list_dirs
@@ -718,10 +795,10 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
 
     @app.post("/api/close/{rid}")
     async def close(rid: str, request: Request, t: str | None = None):
-        await lobby_body(request, t)
+        b = await lobby_body(request, t)
         if rid not in hub.rooms:
             raise HTTPException(404)
-        await hub.close_room(rid, next_page="lobby")
+        await hub.close_room(rid, next_page="lobby", save=b.get("save", True) is not False)
         return {"ok": True}
 
     return app

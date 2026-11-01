@@ -14,7 +14,7 @@ from pathlib import Path
 
 MAX_TEXT = 1500          # characters of quoted text sent to the agent
 CROP_MAX = 640           # longest side of a region crop, in pixels
-PDF_SCALE = 1.6          # page render scale for the browser (1.0 = 72 dpi)
+PDF_SCALE = 3.0          # page render scale for the browser (1.0 = 72 dpi); 3.0 stays sharp on retina screens
 
 # PDFium is not thread-safe, and the server calls us from asyncio.to_thread's
 # pool: two pdfium calls at once (e.g. page renders racing a mark) segfault.
@@ -51,7 +51,7 @@ def _pdf_info(path: Path) -> dict:
 
 def pdf_page_png(path: Path, page: int, cache: Path) -> Path:
     """Render one page (0-based) to a cached PNG."""
-    out = cache / f"{path.stem}.p{page}.png"
+    out = cache / f"{path.stem}.p{page}@{PDF_SCALE:g}.png"
     if out.exists():
         return out
     with _PDF_LOCK:
