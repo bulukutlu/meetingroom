@@ -4,6 +4,9 @@ serves files put on the shared screen."""
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import base64
 import json
 import re
 import secrets
@@ -18,7 +21,8 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .agents import Agent
+from .agents import Agent, assign_people
+from .location import Location
 from .minutes import Recorder, build as build_minutes
 from .stt import Transcriber
 from .tts import MessageAudio, Speaker, clean_for_speech, split_sentences
@@ -74,11 +78,18 @@ class Room:
         self.clients: set[WebSocket] = set()
         self.approvals: dict[str, dict] = {}
         self.agents: dict[str, Agent] = {}
+        self.location: Location = cfg.get("location") or Location()
         self.quota: dict = {}   # plan usage windows reported by Claude Code (account-wide)
+        assign_people(cfg["agents"])
         for spec in cfg["agents"]:
             a = Agent(self, spec)
             self.agents[a.name.lower()] = a
-        self.stt = Transcriber(cfg.get("voice"), self.user, [a.name for a in self.agents.values()])
+        self.alias: dict[str, str] = {}   # first name or handle (lowercase) -> handle
+        for a in self.agents.values():
+            self.alias[a.person.lower()] = a.name.lower()
+        for a in self.agents.values():
+            self.alias[a.name.lower()] = a.name.lower()
+        self.stt = Transcriber(cfg.get("voice"), self.user, [n for a in self.agents.values() for n in (a.name, a.person)])
         self.tts = Speaker(cfg.get("narration"), self.workspace, cfg["agents"])
         self.msg_audio = MessageAudio(self.tts)
         self.narrate = False   # set by the page when "Read replies aloud" is on
@@ -121,7 +132,7 @@ class Room:
         return {
             "quota": self.quota,
             "type": "snapshot", "user": self.user, "session": self.session,
-            "workspace": str(self.workspace), "stt": self.stt.public(), "tts": self.tts.public(),
+            "workspace": str(self.workspace), "location": self.location.public(), "stt": self.stt.public(), "tts": self.tts.public(),
             "agents": [a.public() for a in self.agents.values()],
             "messages": self.messages, "shared": self.shared,
             "approvals": [{k: v for k, v in ap.items() if k != "future"} for ap in self.approvals.values()],
@@ -136,9 +147,10 @@ class Room:
             names = {n.lower() for n in MENTION.findall(lead.group(1))} if lead else set()
         else:
             names = {n.lower() for n in MENTION.findall(text)}
-            for a in self.agents.values():   # a bare name anywhere counts too ("can you check this, sonnet?")
-                if re.search(rf"(?<![\w@-]){re.escape(a.name)}(?![\w-])(?!\s+code\b)", text, re.I):
-                    names.add(a.name.lower())
+            for a in self.agents.values():   # a bare name anywhere counts too ("can you check this, Alejandro?")
+                for nm in (a.name, a.person):
+                    if re.search(rf"(?<![\w@-]){re.escape(nm)}(?![\w-])(?!\s+code\b)", text, re.I):
+                        names.add(nm.lower())
             if not names:                     # no one addressed: answering an agent's question, or the last speaker
                 q = self.open_question()
                 if not q and self.cfg.get("reply_to_last_speaker", True):
@@ -146,6 +158,7 @@ class Room:
                 if q:
                     names = {q}
         targets = []
+        names = {self.alias.get(n, n) for n in names}
         if names & {"all", "everyone"}:
             targets = [a for a in self.agents.values() if a.name.lower() != sender.lower()]
         else:
@@ -204,18 +217,19 @@ class Room:
         ap["future"].set_result(decision in ("yes", "always"))
 
     # ---------------- shared screen
-    async def share(self, agent: Agent, path: Path, title: str) -> str:
+    async def share(self, agent: Agent, path: Path, title: str, source: str | None = None) -> str:
         fid = uuid.uuid4().hex[:12]
-        dest = self.shared_dir / f"{fid}_{path.name}"
+        name = path.name.split("_", 1)[1] if source else path.name
+        dest = self.shared_dir / f"{fid}_{name}"
         shutil.copy2(path, dest)
         self.files[fid] = dest
-        item = {"id": fid, "agent": agent.name, "title": title, "name": path.name,
-                "kind": kind_of(path), "ts": time.time(), "source": str(path)}
+        item = {"id": fid, "agent": agent.name, "title": title, "name": name,
+                "kind": kind_of(path), "ts": time.time(), "source": source or str(path)}
         self.shared.append(item)
-        self.recorder.write(agent.name, "share", str(path), turn=getattr(agent, "turn_id", None), title=title,
+        self.recorder.write(agent.name, "share", source or str(path), turn=getattr(agent, "turn_id", None), title=title,
                            copy=f"shared/{dest.name}")
         await self.broadcast({"type": "shared", "item": item})
-        return f"'{path.name}' is now on the shared screen."
+        return f"'{name}' is now on the shared screen."
 
 
 def create_app(cfg: dict, port: int, token: str) -> FastAPI:
@@ -233,6 +247,10 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
         yield
         for t in tasks:
             t.cancel()
+        try:
+            room.location.close()
+        except Exception:
+            pass
         try:
             print(f"Meeting minutes: {build_minutes(room.session_dir)}")
         except Exception as e:
@@ -338,6 +356,14 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
             raise HTTPException(404)
         return Response(clips[i % len(clips)], media_type="audio/wav")
 
+    @app.get("/tts/perm/{agent}/{i}")
+    async def tts_perm(agent: str, i: int, t: str | None = None):
+        check_token(t)
+        clips = room_holder["room"].tts.perms.get(agent.lower()) or []
+        if not clips:
+            raise HTTPException(404)
+        return Response(clips[i % len(clips)], media_type="audio/wav")
+
     # ---- endpoints used by the MCP bridge inside Claude Code agents
     async def internal_body(request: Request) -> tuple[Room, Agent, dict]:
         check_token(request.headers.get("x-mr-token"))
@@ -362,6 +388,16 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
     @app.post("/internal/share")
     async def internal_share(request: Request):
         room, a, body = await internal_body(request)
+        if body.get("content_b64"):         # remote (SSH) agent uploaded the file itself
+            name = Path(str(body.get("path") or "file")).name or "file"
+            up = room.session_dir / "uploads" / f"{uuid.uuid4().hex[:8]}_{name}"
+            up.parent.mkdir(exist_ok=True)
+            try:
+                up.write_bytes(base64.b64decode(body["content_b64"]))
+            except Exception as e:
+                return {"text": f"error: bad upload: {e}"}
+            src = f"{room.location.host}:{body.get('path')}" if room.location.remote else str(body.get("path") or name)
+            return {"text": await room.share(a, up, body.get("title") or name, source=src)}
         p = Path(str(body.get("path", ""))).expanduser()
         if not p.is_absolute():
             p = a.workdir / p
@@ -396,6 +432,12 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
                 elif typ == "stop_all":
                     for a in room.agents.values():
                         a.stop()
+                elif typ == "quit":
+                    for a in room.agents.values():
+                        a.stop()
+                    await room.broadcast({"type": "bye"})
+                    loop = asyncio.get_running_loop()
+                    loop.call_later(0.8, os.kill, os.getpid(), signal.SIGINT)   # graceful uvicorn shutdown -> minutes, ssh cleanup
                 elif typ == "prefs":
                     room.narrate = bool(ev.get("narrate"))
                 elif typ == "set_approval":

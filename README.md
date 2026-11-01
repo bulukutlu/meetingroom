@@ -195,6 +195,21 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
 
 ---
 
+### Where the meeting takes place
+
+The start page asks where the work happens:
+
+- **Agents' own folders** (default): each agent works in `~/MeetingRoom/agents/<name>/`.
+- **Project folder**: pick any folder on this computer (type it or *Browse…*); every agent works there.
+- **Remote over SSH**: pick a host (aliases from `~/.ssh/config` are suggested) and a folder on it.
+  Claude Code and Codex agents then run *on that machine* in that folder; approval cards and the
+  shared screen keep working through a reverse SSH tunnel. Requirements: key/agent based SSH (no
+  password prompt), `python3`, and `claude` / `codex` installed and logged in on the remote. *Test*
+  checks all of this. API and demo agents stay local and are told to reach the project with `ssh`.
+
+Without the picker: `./run.sh --project ~/analysis` or `./run.sh --ssh mybox --project ~/work`.
+The header in the room shows the active location.
+
 ## 5. Security
 
 - **Nothing is hosted.** The server binds to `127.0.0.1` only; non-localhost
@@ -250,3 +265,7 @@ tools/make_faces.py      turn portrait photos into character faces
 - **0.1.0** (2026-10-31): first release. Claude Code, Codex, Anthropic and OpenAI
   agents; 3D room; approval cards; shared screen; local Whisper voice input and
   Kokoro narration; live effort switching; participant picker; automatic minutes.
+
+## Several instances of one model
+
+On the start-up page use the **+** on a card to seat extra instances (e.g. two Sonnets), or run `python -m meetingroom run --agents claude,sonnet,sonnet`. Clones get handles `sonnet-2`, `sonnet-3`. Every agent also has a human first name (auto-assigned, or `person:` in `agents.yaml`) shown in the UI; address by name ("Priya, plot this") or by `@handle`.

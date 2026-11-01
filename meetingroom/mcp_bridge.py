@@ -10,6 +10,7 @@ per-run access token and the agent name arrive via environment variables
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -18,6 +19,9 @@ import urllib.request
 URL = os.environ.get("MR_URL", "")
 TOKEN = os.environ.get("MR_TOKEN", "")
 AGENT = os.environ.get("MR_AGENT", "")
+HOST = os.environ.get("MR_HOST", "")            # hub's Host header when reached through an SSH tunnel
+UPLOAD = os.environ.get("MR_UPLOAD") == "1"     # remote agent: send file contents, the hub can't read our disk
+MAX_UPLOAD = 50 * 1024 * 1024
 
 TOOLS = [
     {
@@ -49,7 +53,7 @@ TOOLS = [
 def hub(path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         URL + path, data=json.dumps({**payload, "agent": AGENT}).encode(),
-        headers={"Content-Type": "application/json", "X-MR-Token": TOKEN}, method="POST",
+        headers={"Content-Type": "application/json", "X-MR-Token": TOKEN, **({"Host": HOST} if HOST else {})}, method="POST",
     )
     # Proxies must never see this traffic; it is strictly local.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -68,8 +72,16 @@ def call(name: str, args: dict) -> str:
         return json.dumps({"behavior": "deny", "message": "The meeting host denied this. Do not retry it unchanged."})
     if name == "share_to_screen":
         path = os.path.abspath(os.path.expanduser(args.get("path", "")))
+        body = {"path": path, "title": args.get("title") or ""}
+        if UPLOAD:
+            if not os.path.isfile(path):
+                return f"error: {path} does not exist"
+            if os.path.getsize(path) > MAX_UPLOAD:
+                return f"error: {path} is larger than 50 MB"
+            with open(path, "rb") as f:
+                body["content_b64"] = base64.b64encode(f.read()).decode()
         try:
-            return hub("/internal/share", {"path": path, "title": args.get("title") or ""}).get("text", "shared")
+            return hub("/internal/share", body).get("text", "shared")
         except Exception as e:
             return f"error: {e}"
     return f"unknown tool {name}"

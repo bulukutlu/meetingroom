@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .agents import agent_face
+from .location import Location, list_dirs, probe, ssh_hosts
 
 STATIC = Path(__file__).parent / "static"
 
@@ -48,9 +49,39 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  .go{padding:12px 30px;background:var(--amber);color:#1a120c;border:0;border-radius:8px;font:700 15px system-ui;cursor:pointer;box-shadow:0 4px 0 #8a5f1c}
  .go:active{transform:translateY(3px);box-shadow:0 1px 0 #8a5f1c}.go:disabled{opacity:.4;cursor:default}
  .link{color:var(--muted);font-size:13px;cursor:pointer;padding:6px 8px}.link:hover{color:var(--text)}
+ .where{margin-top:30px;width:min(640px,94vw);background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;padding:14px 16px 16px;box-shadow:0 8px 22px #0008}
+ .where h3{margin:0 0 10px;font:700 12px ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+ .seg{display:flex;gap:0;border:2px solid #000;border-radius:7px;overflow:hidden;margin-bottom:12px}
+ .seg button{flex:1;padding:8px 6px;background:#16100b;color:var(--muted);border:0;border-right:2px solid #000;font:600 13px system-ui;cursor:pointer}
+ .seg button:last-child{border-right:0}.seg button.on{background:var(--amber);color:#1a120c}
+ .wrow{display:flex;gap:8px;margin-top:8px;align-items:center}.wrow label{width:58px;color:var(--muted);font-size:12.5px}
+ .wrow input{flex:1;min-width:0;background:#0e0a07;color:var(--text);border:2px solid #000;border-radius:6px;padding:8px 10px;font:13px ui-monospace,Menlo,monospace;outline:none}
+ .wrow input:focus{border-color:#6a5640}
+ .wbtn{padding:8px 12px;background:#2e241b;color:var(--text);border:2px solid #000;border-radius:6px;font:600 12.5px system-ui;cursor:pointer;white-space:nowrap}
+ .wbtn:hover{background:#3a2e22}
+ .note{color:var(--dim);font-size:12.5px;margin-top:4px}
+ .browser{display:none;margin-top:8px;border:2px solid #000;border-radius:6px;background:#0e0a07;max-height:230px;overflow:auto;font:12.5px ui-monospace,Menlo,monospace}
+ .browser .cur{position:sticky;top:0;background:#1b1510;padding:6px 10px;color:var(--amber);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--line)}
+ .browser .cur span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .browser .d{padding:4px 10px;cursor:pointer;color:var(--text)}.browser .d:hover{background:#2a2016}
+ .wst{margin-top:10px;font-size:12.5px;min-height:18px;color:var(--muted)}.wst.ok{color:var(--accent)}.wst.bad{color:#ff7b72}
+ .recent{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+ .recent span{font:11.5px ui-monospace,Menlo,monospace;color:var(--muted);border:1px solid var(--line2);border-radius:5px;padding:2px 8px;cursor:pointer}
+ .recent span:hover{color:var(--text);border-color:#6a5640}
 </style></head><body>
 <h1>&#9679; Meeting room</h1><h2>Who joins this meeting?</h2><p class="sub">Click to pull up a chair. Empty chairs stay dark.</p>
 <div class="grid" id="grid"></div>
+<div class="where">
+ <h3>Where does the meeting take place?</h3>
+ <div class="seg" id="seg"><button data-k="default">Agents' own folders</button><button data-k="local">Project folder</button><button data-k="ssh">Remote over SSH</button></div>
+ <div id="wDefault" class="note">Each agent works in its own folder under the meeting workspace, as before.</div>
+ <div class="wrow" id="wHost"><label>Host</label><input id="host" list="hosts" placeholder="ssh alias or user@server" autocomplete="off" spellcheck="false"><button class="wbtn" id="test">Test</button></div>
+ <datalist id="hosts"></datalist>
+ <div class="wrow" id="wPath"><label>Folder</label><input id="path" placeholder="~/projects/analysis" autocomplete="off" spellcheck="false"><button class="wbtn" id="browse">Browse…</button></div>
+ <div class="browser" id="browser"></div>
+ <div class="recent" id="recent"></div>
+ <div class="wst" id="wst"></div>
+</div>
 <div class="bar"><span class="link" id="all">Select all / none</span><button class="go" id="go">Start meeting</button></div>
 <script type="module">
 const AGENTS=__AGENTS__, T=__TOKEN__, KEY='mr-agents', Q='?t='+encodeURIComponent(T);
@@ -81,20 +112,65 @@ AGENTS.forEach(a=>{const c=document.createElement('div');c.className='card';c.st
 function draw(){AGENTS.forEach(a=>{const on=sel.has(a.name);a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?'SEATED':'EMPTY'});$('go').disabled=!sel.size}
 $('all').onclick=()=>{sel.size===AGENTS.length?sel.clear():AGENTS.forEach(a=>sel.add(a.name));draw()};
 (function loop(t){busts.forEach(b=>b(t/1000));requestAnimationFrame(loop)})(0);
-$('go').onclick=async()=>{const names=AGENTS.map(a=>a.name).filter(n=>sel.has(n));
- localStorage.setItem(KEY,JSON.stringify(names));$('go').disabled=true;$('go').textContent='Starting...';
- await fetch('/select'+Q,{method:'POST',body:JSON.stringify(names)});
+$('go').onclick=async()=>{const names=AGENTS.map(a=>a.name).filter(n=>sel.has(n)), w=where();
+ if(w.kind!=='default'&&!w.path&&w.kind==='local'){status('Choose a project folder (or pick “Agents’ own folders”).','bad');return}
+ if(w.kind==='ssh'&&!w.host){status('Enter an SSH host.','bad');return}
+ localStorage.setItem(KEY,JSON.stringify(names));$('go').disabled=true;$('go').textContent=w.kind==='ssh'?'Connecting...':'Starting...';
+ const res=await fetch('/select'+Q,{method:'POST',body:JSON.stringify({agents:names,location:w})});
+ if(!res.ok){const j=await res.json().catch(()=>({}));status(j.error||'Could not start ('+res.status+')','bad');$('go').disabled=false;$('go').textContent='Start meeting';return}
+ const j=await res.json().catch(()=>({}));if(j.location)Object.assign(w,j.location);
+ localStorage.setItem(WKEY,JSON.stringify(w));
+ if(w.kind!=='default'){const rec=JSON.parse(localStorage.getItem(RKEY)||'[]').filter(r=>!(r.kind===w.kind&&r.path===w.path&&(r.host||'')===(w.host||'')));
+  rec.unshift({kind:w.kind,path:w.path,host:w.host});localStorage.setItem(RKEY,JSON.stringify(rec.slice(0,8)))}
  for(;;){await new Promise(r=>setTimeout(r,400));
   try{const r=await fetch('/'+Q,{cache:'no-store'});const x=await r.text();
    if(r.ok&&!x.includes('Who joins this meeting')){location.replace('/'+Q);return}}catch(e){}}};
+// ---- where: agents' folders | local project folder | remote over SSH
+const WKEY='mr-where', RKEY='mr-where-recent', HOSTS=__HOSTS__;
+let W=Object.assign({kind:'default',path:'',host:''},JSON.parse(localStorage.getItem(WKEY)||'{}'));
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+$('hosts').innerHTML=HOSTS.map(h=>'<option value="'+esc(h)+'">').join('');
+$('host').value=W.host;$('path').value=W.path;
+function status(t,c){$('wst').textContent=t||'';$('wst').className='wst '+(c||'')}
+function drawWhere(){
+ [...$('seg').children].forEach(b=>b.classList.toggle('on',b.dataset.k===W.kind));
+ $('wDefault').style.display=W.kind==='default'?'':'none';$('wHost').style.display=W.kind==='ssh'?'':'none';
+ $('wPath').style.display=W.kind==='default'?'none':'';if(W.kind==='default')$('browser').style.display='none';
+ $('path').placeholder=W.kind==='ssh'?'~ (remote home) or /path/on/server':'~/projects/analysis';
+ const rec=(JSON.parse(localStorage.getItem(RKEY)||'[]')).filter(r=>r.kind===W.kind);
+ $('recent').innerHTML=rec.map((r,i)=>'<span data-r="'+i+'" title="Use this again">'+esc(r.kind==='ssh'?r.host+':'+r.path:r.path)+'</span>').join('');
+ $('recent').onclick=e=>{const t=e.target.closest('[data-r]');if(!t)return;const r=rec[+t.dataset.r];
+  $('path').value=r.path;$('host').value=r.host||'';status('');$('browser').style.display='none'};
+}
+$('seg').onclick=e=>{const b=e.target.closest('[data-k]');if(b){W.kind=b.dataset.k;status('');drawWhere()}};
+const where=()=>({kind:W.kind,path:$('path').value.trim(),host:W.kind==='ssh'?$('host').value.trim():''});
+async function api(p,body){const r=await fetch(p+Q,body?{method:'POST',body:JSON.stringify(body)}:{});return r.json().catch(()=>({error:'HTTP '+r.status}))}
+async function browse(path){
+ const w=where(),b=$('browser');if(W.kind==='ssh'&&!w.host){status('Enter a host first.','bad');return}
+ b.style.display='block';b.innerHTML='<div class="cur"><span>'+(W.kind==='ssh'?'connecting to '+esc(w.host)+'…':'loading…')+'</span></div>';
+ const r=await api('/ls',{path:path??(w.path||'~'),host:w.host});
+ if(r.error){b.innerHTML='<div class="cur"><span>'+esc(r.error)+'</span></div>';return}
+ b.innerHTML='<div class="cur"><span title="'+esc(r.path)+'">'+esc((w.host?w.host+':':'')+r.path)+'</span><button class="wbtn" data-use>Use this folder</button></div>'+
+  (r.path!==r.parent?'<div class="d" data-p="'+esc(r.parent)+'">..</div>':'')+r.dirs.map(d=>'<div class="d" data-p="'+esc(r.path.replace(/\\/$/,'')+'/'+d)+'">'+esc(d)+'/</div>').join('');
+ b.onclick=e=>{const d=e.target.closest('[data-p]');if(d)return browse(d.dataset.p);
+  if(e.target.closest('[data-use]')){$('path').value=r.path;b.style.display='none';status('')}};
+ $('path').value=r.path;
+}
+$('browse').onclick=()=>$('browser').style.display==='block'?($('browser').style.display='none'):browse();
+$('test').onclick=async()=>{const w=where();if(!w.host)return status('Enter a host first.','bad');
+ status('Connecting to '+w.host+'…');const r=await api('/probe',w);
+ if(!r.ok)return status(r.error,'bad');$('path').value=r.path;
+ const b=r.bins;status('✓ '+r.host+':'+r.path+'  ·  claude '+(b.claude?'✓':'✗ missing')+'  ·  codex '+(b.codex?'✓':'✗ missing'),'ok')};
+drawWhere();
 draw();
 </script></body></html>"""
 
 
-def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> list[str]:
-    """Serve the picker on 127.0.0.1:port until a selection is posted; return the chosen names."""
+def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> tuple[list[str], Location]:
+    """Serve the picker on 127.0.0.1:port until a selection is posted; return the chosen names and location."""
     done = threading.Event()
     chosen: list[str] = []
+    picked: dict = {"loc": Location()}
     hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     info = [{"name": a["name"], "provider": a.get("provider", ""), "color": a.get("color", "#888"),
              "role": a.get("role", ""), "face": agent_face(a)} for a in agents]
@@ -123,7 +199,8 @@ def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> lis
                 self.send_response(200); self.send_header("Content-Type", ct); self.end_headers()
                 self.wfile.write(f.read_bytes()); return
             body = (PAGE.replace("__AGENTS__", json.dumps(info).replace("</", "<\\/"))
-                    .replace("__TOKEN__", json.dumps(token)).replace("__CHAR__", _char_source())).encode()
+                    .replace("__TOKEN__", json.dumps(token)).replace("__HOSTS__", json.dumps(ssh_hosts()).replace("</", "<\\/"))
+                    .replace("__CHAR__", _char_source())).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -133,16 +210,35 @@ def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> lis
             if not self._ok() or self.headers.get("Origin") not in {f"http://{h}" for h in hosts}:
                 self.send_response(403); self.end_headers(); return
             try:
-                names = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-                valid = {a["name"] for a in agents}
-                names = [n for n in names if n in valid]
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             except Exception:
-                names = []
+                body = None
+            path = urlparse(self.path).path
+            if path == "/ls" and isinstance(body, dict):
+                return self._json(200, list_dirs(str(body.get("path") or "~"), str(body.get("host") or "") or None))
+            if path == "/probe" and isinstance(body, dict):
+                return self._json(200, probe(str(body.get("host") or ""), str(body.get("path") or "~")))
+            if path != "/select":
+                self.send_response(404); self.end_headers(); return
+            if isinstance(body, list):          # older page: just the names
+                body = {"agents": body}
+            body = body if isinstance(body, dict) else {}
+            valid = {a["name"] for a in agents}
+            names = [n for n in body.get("agents") or [] if n in valid]
             if not names:
-                self.send_response(400); self.end_headers(); return
+                return self._json(400, {"error": "choose at least one participant"})
+            loc = Location.from_dict(body.get("location"))
+            if err := loc.validate():
+                return self._json(400, {"error": err})
             chosen.extend(names)
-            self.send_response(204); self.end_headers()
+            picked["loc"] = loc
+            self._json(200, {"location": {"kind": loc.kind, "path": loc.path, "host": loc.host}})
             done.set()
+
+        def _json(self, code: int, obj: dict):
+            data = json.dumps(obj).encode()
+            self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(data)
 
     class S(ThreadingHTTPServer):
         allow_reuse_address = True
@@ -154,4 +250,4 @@ def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> lis
         open_url()
     done.wait()
     srv.shutdown(); srv.server_close()
-    return chosen
+    return chosen, picked["loc"]

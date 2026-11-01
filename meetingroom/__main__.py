@@ -8,6 +8,8 @@
     python -m meetingroom run --demo            # try it with key-free demo agents
     python -m meetingroom run --agents claude,codex   # skip the picker, start only these
     python -m meetingroom run --all             # skip the picker, start everyone
+    python -m meetingroom run --project ~/analysis          # meeting works in this folder
+    python -m meetingroom run --ssh mybox --project ~/work  # agents run on a remote machine over SSH
 """
 from __future__ import annotations
 
@@ -60,6 +62,8 @@ def main():
     r.add_argument("--no-browser", action="store_true")
     r.add_argument("--agents", help="comma-separated agent names to start (skips the picker page)")
     r.add_argument("--all", action="store_true", help="start every configured agent (skips the picker page)")
+    r.add_argument("--project", help="project folder the meeting works in (remote path with --ssh)")
+    r.add_argument("--ssh", metavar="HOST", help="run the Claude Code / Codex agents on this SSH host")
     s = sub.add_parser("set-key"); s.add_argument("provider", choices=list(keys.PROVIDERS))
     d = sub.add_parser("remove-key"); d.add_argument("provider", choices=list(keys.PROVIDERS))
     sub.add_parser("keys")
@@ -90,12 +94,18 @@ def main():
 
     cfg = DEMO_CFG if a.demo else load_cfg(a.config)
     import uvicorn
+    from .location import Location
     from .server import create_app
 
     token = secrets.token_urlsafe(24)  # new every start; never stored
     url = f"http://127.0.0.1:{a.port}/?t={token}"
     opener = None if a.no_browser else (lambda: threading.Timer(1.0, lambda: webbrowser.open(url)).start())
     all_agents = cfg["agents"]
+    loc = Location.from_dict({"path": a.project or "", "host": a.ssh or ""})
+    if a.ssh and not a.project:
+        loc.path = "~"
+    if err := loc.validate():
+        sys.exit(err)
     if a.agents:
         want = [n.strip().lower() for n in a.agents.split(",") if n.strip()]
         known = {x["name"].lower() for x in all_agents}
@@ -107,12 +117,22 @@ def main():
     else:
         from .picker import pick_agents
         print(f"\n  Choose participants in the browser: {url}\n")
-        names = pick_agents(all_agents, a.port, token, opener)
+        names, picked = pick_agents(all_agents, a.port, token, opener)
+        if not (a.project or a.ssh):
+            loc = picked
         opener = None   # already open; the page redirects itself into the room
-    cfg = {**cfg, "agents": [x for x in all_agents if x["name"] in names]}
+    cfg = {**cfg, "agents": [x for x in all_agents if x["name"] in names], "location": loc}
+    if loc.remote:
+        print(f"  Connecting to {loc.host} ...")
+        try:
+            loc.connect(a.port, token)
+        except Exception as e:
+            sys.exit(str(e))
     app = create_app(cfg, a.port, token)
     print("\n  Meeting room running (only reachable from this computer)")
     print(f"  Participants: {', '.join('@' + x['name'] for x in cfg['agents'])}")
+    if loc.label():
+        print(f"  Project: {loc.label()}" + ("  (Claude Code / Codex agents run there over SSH)" if loc.remote else ""))
     print(f"  Open: {url}\n")
     if opener:
         opener()

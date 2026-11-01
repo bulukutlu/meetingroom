@@ -71,6 +71,66 @@ def is_token_limit(error) -> bool:
     ))
 
 
+# Human names handed out to agents, so several instances of one model type can be told apart
+# (and addressed by voice: "Alejandro, plot this"). Override per agent with `person:` in agents.yaml.
+PEOPLE = ["Alejandro", "Priya", "Mateo", "Ingrid", "Kenji", "Amara", "Tomasz", "Leila", "Rafael", "Sunniva",
+          "Dmitri", "Chiara", "Omar", "Freya", "Hiro", "Nadia", "Lucas", "Zainab", "Pavel", "Elena"]
+CLONE_FACES = [4, 6, 3, 1, 2, 5]
+
+
+def assign_people(specs: list[dict]) -> list[dict]:
+    """Give every spec a unique `person` (human name); explicit ones are kept, the rest come from PEOPLE."""
+    used = {str(s["person"]).lower() for s in specs if s.get("person")}
+    handles = {s["name"].lower() for s in specs}
+    pool = [n for n in PEOPLE if n.lower() not in used and n.lower() not in handles]
+    for s in specs:
+        if not s.get("person"):
+            s["person"] = pool.pop(0) if pool else f"Agent{len(used) + 1}"
+            used.add(s["person"].lower())
+    return specs
+
+
+def expand_agents(base: list[dict], wanted: list[str]) -> list[dict]:
+    """Specs for the wanted handles. A handle named again (or a new `sonnet-2` style one) becomes a
+    clone of its base spec with a unique handle, its own colour shade and its own face."""
+    by = {a["name"].lower(): a for a in base}
+    out: list[dict] = []
+    count: dict[str, int] = {}
+    for w in wanted:
+        k = w.lower()
+        root = k if k in by else re.sub(r"[-_ ]?\d+$", "", k)
+        if root not in by:
+            continue
+        spec = dict(by[root])
+        n = count[root] = count.get(root, 0) + 1
+        taken = {s["name"].lower() for s in out}
+        if n > 1 or k in taken:
+            i = 2
+            while f"{root}-{i}" in taken or f"{root}-{i}" in by:
+                i += 1
+            spec["name"] = f"{root}-{i}"
+            spec.pop("person", None)
+            spec["color"] = shade(spec.get("color", "#8888ff"), i - 1)
+            spec["face"] = CLONE_FACES[(i + CLONE_FACES.index(agent_face(by[root])) - 1) % len(CLONE_FACES)] if agent_face(by[root]) in CLONE_FACES else (i % 6) + 1
+            spec.pop("voice", None)
+        out.append(spec)
+    return assign_people(out)
+
+
+def shade(hexcol: str, k: int) -> str:
+    """Same hue family, shifted lightness, so clones are distinguishable at a glance."""
+    import colorsys
+    try:
+        r, g, b = (int(hexcol[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    except Exception:
+        return hexcol
+    h, l, sat = colorsys.rgb_to_hls(r, g, b)
+    l = min(0.8, max(0.3, l + (0.12 if k % 2 else -0.12) * ((k + 1) // 2)))
+    h = (h + 0.04 * k) % 1
+    r, g, b = colorsys.hls_to_rgb(h, l, sat)
+    return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+
+
 MAX_STEPS = 40  # tool-use iterations per turn
 
 # Shared by every agent type. The point of the room is that it feels FASTER
@@ -86,7 +146,7 @@ MEETING_RULES = """MEETING RULES (they override your usual style):
 - Never: greetings, pleasantries, thanks, restating the question, announcing routine actions, step-by-step narration of routine actions, offering further help, "standing by", "ready when you are", summarising what others said, replying to acknowledgements.
 - Exception, big tasks: before starting a long project (many steps, minutes of work), give ONE short heads-up sentence saying what you will do (e.g. "I'll refactor the parser and rerun all fits."). Do not wait for a reply; start working right away. Never do this for routine or quick tasks.
 - Do not answer for others or comment on messages addressed to someone else.
-- Hand work to another participant only when needed, by STARTING your reply with @name and the concrete task (e.g. "@sonnet plot thr_map.csv as a heatmap."). Mentioning a name anywhere else does nothing; refer to others without @ otherwise.
+- Hand work to another participant only when needed, by STARTING your reply with their @handle (shown in the roster) and the concrete task (e.g. "@sonnet plot thr_map.csv as a heatmap."). The room also accepts their first name as @Name. People may call you by your first name too. Mentioning a name anywhere else does nothing; refer to others without @ otherwise.
 """
 TURN_REMINDER = ("REMINDER: be as brief as possible. Task: show the result on screen, then \"Here it is.\" (only if you showed something on screen; otherwise just answer directly) plus at most ONE short "
                  "sentence for a caveat; max 25 words, no lists, no recap. Quick question: max 10 words. Never describe what is on "
@@ -105,6 +165,7 @@ class Agent:
         self.room = room
         self.spec = spec
         self.name: str = spec["name"]
+        self.person: str = spec.get("person") or self.name.capitalize()
         self.provider: str = spec.get("provider", "mock")
         self.model: str = spec.get("model", "")
         self.color: str = spec.get("color", "#8888ff")
@@ -113,7 +174,10 @@ class Agent:
         # Reasoning effort; medium unless agents.yaml says otherwise (changeable live in the room).
         self.effort: str = str(spec.get("effort") or ("medium" if self.provider in EFFORTS else ""))
         self.max_tokens: int = int(spec.get("max_tokens", 16000))
-        self.workdir: Path = (room.workspace / "agents" / self.name).resolve()
+        loc = room.location
+        # local project folder: everyone works there; otherwise each agent has its own folder
+        # (for SSH rooms that local folder only serves API/demo agents, CLI agents run remotely)
+        self.workdir: Path = Path(loc.path) if loc.kind == "local" else (room.workspace / "agents" / self.name).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.status = "idle"
         self.activity = ""
@@ -134,13 +198,22 @@ class Agent:
     # ---------- presentation ----------
     def public(self) -> dict:
         return {
-            "name": self.name, "provider": self.provider, "model": self.model,
+            "name": self.name, "person": self.person, "provider": self.provider, "model": self.model,
             "color": self.color, "role": self.role, "status": self.status,
             "activity": self.activity, "approval": self.approval,
             "effort": self.effort, "efforts": EFFORTS.get(self.provider, []),
-            "offline_reason": self.offline_reason, "workdir": str(self.workdir),
+            "offline_reason": self.offline_reason, "workdir": self.where(),
             "face": agent_face(self.spec), "usage": self.usage,
         }
+
+    @property
+    def remote(self) -> bool:
+        """Runs on the SSH machine (only the CLI agents can)."""
+        return self.room.location.remote and self.provider in ("claude-code", "codex")
+
+    def where(self) -> str:
+        loc = self.room.location
+        return f"{loc.host}:{loc.path}" if self.remote else str(self.workdir)
 
     def trace(self, kind: str, text: str = "", **extra):
         """Record behind-the-scenes work for the meeting minutes."""
@@ -155,8 +228,8 @@ class Agent:
 
     def system_prompt(self) -> str:
         others = [a for a in self.room.agents.values() if a.name != self.name]
-        roster = "\n".join(f"- @{a.name} ({a.provider} {a.model}): {a.role or 'participant'}" for a in others) or "- (none)"
-        return f"""You are @{self.name}, an AI participant in a live working meeting run from the meeting-room app on {self.room.user}'s computer.
+        roster = "\n".join(f"- {a.person} (@{a.name}, {a.provider} {a.model}): {a.role or 'participant'}" for a in others) or "- (none)"
+        return f"""You are {self.person} (@{self.name}), an AI participant in a live working meeting run from the meeting-room app on {self.room.user}'s computer.
 
 Your role: {self.role or 'general assistant'}
 
@@ -168,7 +241,7 @@ How the meeting works:
 - You receive new transcript lines since your last turn, then the request addressed to you. Your final text answer is posted to the meeting.
 - You can actually do work on {self.room.user}'s machine with tools: run_shell, run_python, read_file, write_file, list_dir. Machine: {tools.machine_info(self.room.python)}.
 - Your workspace folder is {self.workdir}. Relative paths resolve there. Files elsewhere may be accessed with absolute paths; {self.room.user} may be asked to approve.
-- Show results with share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). Prefer showing over describing.
+{location_note(self)}- Show results with share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). Prefer showing over describing.
 - If a tool call is denied, do not retry it unchanged; adapt or ask.
 """
 
@@ -227,7 +300,7 @@ How the meeting works:
         ctx = self._gather_context()
         prompt = (
             "New in the meeting transcript:\n" + (ctx or "(nothing new)\n") +
-            f"\nYou (@{self.name}) were mentioned. Do/answer only what was asked of YOU.\n\n{TURN_REMINDER}"
+            f"\nYou ({self.person}, @{self.name}) were mentioned. Do/answer only what was asked of YOU.\n\n{TURN_REMINDER}"
         )
         self.turn_id = uuid.uuid4().hex[:10]
         self.trace("prompt", prompt)
@@ -277,14 +350,29 @@ def make_backend(agent: Agent):
     raise ValueError(f"unknown provider '{agent.provider}'")
 
 
+def location_note(a: Agent) -> str:
+    """Tells every agent where this meeting's work happens."""
+    loc = a.room.location
+    if loc.kind == "local":
+        return f"- PROJECT: this meeting works in the project folder {loc.path} (your working directory). Keep work and outputs there.\n"
+    if loc.kind == "ssh" and a.remote:
+        return (f"- PROJECT: this meeting works on the REMOTE machine '{loc.host}' in {loc.path}, reached over SSH. You are "
+                f"running on {loc.host} in that folder; every command and file you touch is on {loc.host}, not on "
+                f"{a.room.user}'s laptop. share_to_screen still works (files are uploaded to the room).\n")
+    if loc.kind == "ssh":
+        return (f"- PROJECT: this meeting's project lives on the REMOTE machine '{loc.host}' in {loc.path}. Your own tools run "
+                f"locally; reach the project with run_shell and `ssh {loc.host} '<command>'` (copy results back with scp to share them).\n")
+    return ""
+
+
 def cli_meeting_prompt(a: Agent, tools_hint: str) -> str:
     """System text for the CLI-driven agents (Claude Code, Codex)."""
     others = [o for o in a.room.agents.values() if o.name != a.name]
-    roster = ", ".join(f"@{o.name} ({o.role or o.model})" for o in others) or "none"
+    roster = ", ".join(f"{o.person} (@{o.name}, {o.role or o.model})" for o in others) or "none"
     return (
-        f"You are @{a.name}, one participant in a live working meeting hosted by {a.room.user} "
+        f"You are {a.person} (@{a.name}), one participant in a live working meeting hosted by {a.room.user} "
         f"in the meeting-room app. Your role: {a.role or 'general assistant'}. Other AI participants: {roster}.\n\n"
-        + MEETING_RULES +
+        + MEETING_RULES + location_note(a) +
         "\nEach turn you get the new transcript lines and the request addressed to you. Do the work with your "
         "tools; your final text is posted to the meeting. " + tools_hint
     )
@@ -294,7 +382,8 @@ def bridge_env(a: Agent, drop_key: str) -> dict:
     """Environment for a CLI agent: tells the MCP bridge how to reach the hub and
     removes the API key variable so the CLI uses the user's own login."""
     env = dict(os.environ)
-    env.update({"MR_URL": f"http://127.0.0.1:{a.room.port}", "MR_TOKEN": a.room.token, "MR_AGENT": a.name})
+    env.update({"MR_URL": f"http://127.0.0.1:{a.room.port}", "MR_TOKEN": a.room.token, "MR_AGENT": a.name,
+                "MR_HOST": f"127.0.0.1:{a.room.port}", "MR_UPLOAD": "0"})
     env.pop(drop_key, None)
     return env
 
@@ -401,7 +490,11 @@ class ClaudeCodeBackend:
 
     def __init__(self, agent: Agent):
         self.agent = agent
-        exe = find_claude(agent.spec.get("claude_path"))
+        loc = agent.room.location
+        exe = (agent.spec.get("remote_claude_path") or loc.bins.get("claude")) if agent.remote else find_claude(agent.spec.get("claude_path"))
+        if not exe and agent.remote:
+            raise RuntimeError(f"Claude Code not found on {loc.host}. Install it there and log in once (`claude`), "
+                               "or set `remote_claude_path:` for this agent in agents.yaml.")
         if not exe:
             raise RuntimeError(
                 "Claude Code not found. In your terminal run `which claude` (or `type claude`) and put "
@@ -409,9 +502,10 @@ class ClaudeCodeBackend:
         self.exe = exe
         self.session_id: str | None = None
         self.permission_mode = agent.spec.get("permission_mode")  # optional
-        self.extra_dirs = [str(Path(d).expanduser()) for d in agent.spec.get("add_dirs", [])]
+        self.extra_dirs = [] if agent.remote else [str(Path(d).expanduser()) for d in agent.spec.get("add_dirs", [])]
+        py, bridge = (loc.bins.get("python3"), loc.bridge) if agent.remote else (sys.executable, BRIDGE)
         self.mcp_config = json.dumps({"mcpServers": {"meetingroom": {
-            "type": "stdio", "command": sys.executable, "args": [BRIDGE],
+            "type": "stdio", "command": py, "args": [bridge],
         }}})
 
     def _meeting_prompt(self) -> str:
@@ -423,7 +517,7 @@ class ClaudeCodeBackend:
 
     def _cmd(self) -> list[str]:
         a = self.agent
-        cmd = [self.exe, "-p", "--output-format", "stream-json", "--verbose",
+        cmd = ["-p", "--output-format", "stream-json", "--verbose",
                "--append-system-prompt", self._meeting_prompt(),
                "--mcp-config", self.mcp_config,
                "--permission-prompt-tool", "mcp__meetingroom__approve",
@@ -438,7 +532,9 @@ class ClaudeCodeBackend:
             cmd += ["--add-dir", d]
         if self.session_id:
             cmd += ["--resume", self.session_id]
-        return cmd
+        if a.remote:
+            return a.room.location.ssh_argv(a.name, a.room.port, self.exe, cmd, "ANTHROPIC_API_KEY")
+        return [self.exe, *cmd]
 
     async def turn(self, user_text: str) -> str:
         try:
@@ -555,16 +651,23 @@ class CodexBackend:
 
     def __init__(self, agent: Agent):
         self.agent = agent
-        exe = agent.spec.get("codex_path") or shutil.which("codex") or next(
+        loc = agent.room.location
+        if agent.remote:
+            exe = agent.spec.get("remote_codex_path") or loc.bins.get("codex")
+            if not exe:
+                raise RuntimeError(f"Codex CLI not found on {loc.host}. Install it there and sign in once, "
+                                   "or set `remote_codex_path:` for this agent in agents.yaml.")
+        else:
+            exe = agent.spec.get("codex_path") or shutil.which("codex") or next(
             (str(p) for p in (Path.home() / ".local/bin/codex", Path("/opt/homebrew/bin/codex"),
                               Path("/usr/local/bin/codex")) if p.is_file()), None)
         if not exe:
             raise RuntimeError("Codex CLI not found. Put its path as `codex_path:` for this agent in agents.yaml.")
-        self.exe = str(Path(exe).expanduser())
+        self.exe = exe if agent.remote else str(Path(exe).expanduser())
         self.thread_id: str | None = None
         self.sandbox = agent.spec.get("sandbox", "workspace-write")
         self.network = bool(agent.spec.get("network", True))   # allow network inside the workspace-write sandbox
-        self.extra_dirs = [str(Path(d).expanduser()) for d in agent.spec.get("add_dirs", [])]
+        self.extra_dirs = [] if agent.remote else [str(Path(d).expanduser()) for d in agent.spec.get("add_dirs", [])]
 
     def _meeting_prompt(self) -> str:
         return cli_meeting_prompt(self.agent,
@@ -574,13 +677,15 @@ class CodexBackend:
 
     def _cmd(self) -> list[str]:
         a = self.agent
-        cmd = [self.exe, "exec"]
+        loc = a.room.location
+        py, bridge = (loc.bins.get("python3"), loc.bridge) if a.remote else (sys.executable, BRIDGE)
+        cmd = ["exec"]
         if self.thread_id:
             cmd += ["resume", self.thread_id]
         cmd += ["--json", "--skip-git-repo-check",
-                "-c", f"mcp_servers.meetingroom.command={json.dumps(sys.executable)}",
-                "-c", f"mcp_servers.meetingroom.args=[{json.dumps(BRIDGE)}]",
-                "-c", 'mcp_servers.meetingroom.env_vars=["MR_URL","MR_TOKEN","MR_AGENT"]',
+                "-c", f"mcp_servers.meetingroom.command={json.dumps(py)}",
+                "-c", f"mcp_servers.meetingroom.args=[{json.dumps(bridge)}]",
+                "-c", 'mcp_servers.meetingroom.env_vars=["MR_URL","MR_TOKEN","MR_AGENT","MR_HOST","MR_UPLOAD"]',
                 "-c", "mcp_servers.meetingroom.tool_timeout_sec=86400",
                 "-c", 'mcp_servers.meetingroom.tools.share_to_screen.approval_mode="approve"',
                 "-c", f"sandbox_mode={json.dumps(self.sandbox)}",
@@ -588,14 +693,17 @@ class CodexBackend:
         if self.network:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         if not self.thread_id:
-            cmd += ["-C", str(a.workdir)]
+            cmd += ["-C", loc.path if a.remote else str(a.workdir)]
             for d in self.extra_dirs:
                 cmd += ["--add-dir", d]
         if a.model:
             cmd += ["-m", a.model]
         if a.effort:
             cmd += ["-c", f"model_reasoning_effort={json.dumps(a.effort)}"]
-        return cmd + ["-"]
+        cmd += ["-"]
+        if a.remote:
+            return loc.ssh_argv(a.name, a.room.port, self.exe, cmd, "OPENAI_API_KEY")
+        return [self.exe, *cmd]
 
     async def _read_limits(self):
         """`codex exec --json` doesn't stream plan limits, but Codex logs them in its session

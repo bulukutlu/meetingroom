@@ -51,6 +51,7 @@ header .spacer{flex:1}
 .lbl.off{opacity:.55}
 #labels{transition:opacity .4s}
 #labels.focus{opacity:0}
+#labels.focus .tag{pointer-events:none!important}
 .bubble{max-width:300px;background:#f3ecd9;color:#1d1710;border:3px solid #000;padding:6px 9px;font-size:12.5px;line-height:1.35;
   box-shadow:3px 3px 0 #000;position:relative;white-space:pre-wrap;word-break:break-word}
 .bubble::after{content:"";position:absolute;left:50%;bottom:-9px;margin-left:-6px;border:6px solid transparent;border-top-color:#000;border-bottom:0}
@@ -62,6 +63,16 @@ header .spacer{flex:1}
 @keyframes doze-float{0%{transform:translate(0,4px) scale(.6);opacity:0}20%{opacity:1}100%{transform:translate(22px,-30px) scale(1.3);opacity:0}}
 @media(prefers-reduced-motion:reduce){.bubble.doze::before,.bubble.doze::after{animation:none!important;opacity:1}}
 .bubble.wait{background:var(--amber);color:#1d1406;font-weight:700}
+.lbl.hover .tag{border-color:#8a7c66}
+#amenu{position:absolute;z-index:6;display:none;min-width:220px;background:var(--panel2);border:3px solid #000;box-shadow:4px 4px 0 #000;font-family:var(--mono);font-size:12px;padding:8px 10px 10px}
+#amenu .h{display:flex;align-items:center;gap:8px;font-size:13.5px;margin-bottom:2px}
+#amenu .h i{width:10px;height:10px;flex:none}
+#amenu .h .x{margin-left:auto;padding:0 6px;border:0;background:none;color:var(--muted)}
+#amenu small{display:block;color:var(--dim);font-size:11px;margin-bottom:8px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#amenu .row{display:flex;align-items:center;gap:8px;margin-top:6px}
+#amenu .row label{color:var(--muted);width:62px}
+#amenu .row select,#amenu .row button{flex:1;border-radius:0;border:2px solid #000;font-family:var(--mono);font-size:12px;padding:4px 6px;background:var(--panel);color:inherit}
+#amenu .row button:hover:not(:disabled){background:#3a2e22}
 #overlay{position:absolute;left:0;top:0;width:800px;height:600px;transform-origin:0 0;background:#0b130b;overflow:hidden;display:none;will-change:transform}
 #overlay img{width:100%;height:100%;object-fit:contain;display:block}
 #overlay iframe{width:100%;height:100%;border:0;background:#fff;display:block}
@@ -189,6 +200,7 @@ textarea:focus{border-color:#5d4a35}
   <label class="toggle"><input type="checkbox" id="autosend"> Send voice when I stop</label>
   <button class="ghost" id="skipvoice" title="Stop the voice reading aloud now (agents keep working). Key: S">Skip voice</button>
   <button class="ghost" id="stopall" title="Stop every agent">Stop all</button>
+  <button class="ghost" id="endmeeting" title="End the meeting and shut the room down (or click the door in the room)">Exit &#128682;</button>
   <div class="conn" id="conn"><i></i><span>connecting</span></div>
 </header>
 
@@ -204,6 +216,7 @@ textarea:focus{border-color:#5d4a35}
     <button id="sbClose" title="Clear the screen">✕</button>
   </div>
   <div class="approvals" id="approvals"></div>
+  <div id="amenu"></div>
   <div class="loading" id="loading">loading room…</div>
 </section>
 <aside id="side">
@@ -255,11 +268,14 @@ for (const id of ["tts", "sounds", "autosend"]) {
 document.addEventListener("click", e => { const f = e.target.closest("[data-fold]"); if (f) { const p = $(f.dataset.fold); p.classList.toggle("fold"); f.textContent = p.classList.contains("fold") ? "+" : "–"; } });
 
 try {
-  room = createRoom({ wrap: $("game"), canvas: $("cv"), labels: $("labels"), overlay: $("overlay") });
+  room = createRoom({ wrap: $("game"), canvas: $("cv"), labels: $("labels"), overlay: $("overlay"),
+    onPick: p => p && p.kind === "door" ? endMeeting() : p && p.kind === "agent" ? openAgentMenu(p.name, p.x, p.y) : closeAgentMenu(),
+    onFocusChange: () => { closeAgentMenu(); syncFocusBtn(); } });
   $("loading").remove();
 } catch (e) { $("loading").textContent = "3D view unavailable: " + e.message; }
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const personOf = h => (S.agents.find(a => a.name === h) || {}).person || h;
 const colorOf = name => (S.agents.find(a => a.name === name) || {}).color || (name === S.user ? "#e8dcc4" : "#76664f");
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const fileUrl = id => `/files/${id}?t=${encodeURIComponent(TOKEN)}`;
@@ -312,7 +328,7 @@ function mdDoc(src) {
 }
 
 // ---------------- sounds: acknowledgements + keyboard clicks (Web Audio, all local)
-const AU = { ctx: null, noise: null, acks: {}, last: {}, loaded: false };
+const AU = { ctx: null, noise: null, acks: {}, perms: {}, last: {}, loaded: false };
 function actx() {
   if (!AU.ctx) {
     AU.ctx = new AudioContext();
@@ -334,6 +350,18 @@ async function loadAcks() {
       try { const r = await fetch(`/tts/ack/${encodeURIComponent(agent)}/${i}${q}`); AU.acks[agent].push(await c.decodeAudioData(await r.arrayBuffer())); } catch (e) {}
     }
   }
+  for (const [agent, n] of Object.entries(S.tts.perms || {})) {
+    AU.perms[agent] = [];
+    for (let i = 0; i < n; i++) {
+      try { const r = await fetch(`/tts/perm/${encodeURIComponent(agent)}/${i}${q}`); AU.perms[agent].push(await c.decodeAudioData(await r.arrayBuffer())); } catch (e) {}
+    }
+  }
+}
+function askPermission(name) {   // spoken "I need your permission" when an approval card appears
+  if (!$("sounds").checked || isRecording()) return;
+  const list = AU.perms[name.toLowerCase()];
+  if (list && list.length && AU.ctx) playBuffer(list[Math.floor(Math.random() * list.length)], 0.95);
+  else if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance("I need your permission for this."));
 }
 function playBuffer(buf, gain = 0.9) {
   const c = actx(), s = c.createBufferSource(), g = c.createGain();
@@ -380,7 +408,7 @@ function connect() {
   ws.onopen = () => { retry = 0; c.className = "conn on"; c.lastChild.textContent = "live on this computer"; sendPrefs(); };
   ws.onclose = ev => {
     c.className = "conn"; c.lastChild.textContent = ev.code === 4403 ? "access denied: reopen the link from the terminal" : "reconnecting…";
-    if (ev.code !== 4403) setTimeout(connect, Math.min(8000, 500 * 2 ** retry++));
+    if (ev.code !== 4403 && !ended) setTimeout(connect, Math.min(8000, 500 * 2 ** retry++));
   };
   ws.onmessage = e => handle(JSON.parse(e.data));
 }
@@ -394,11 +422,14 @@ function handle(ev) {
       S.user = ev.user; S.agents = ev.agents; S.messages = ev.messages; S.shared = ev.shared;
       S.approvals = new Map(ev.approvals.map(a => [a.id, a]));
       S.quota = ev.quota; renderQuota();
-      $("meta").textContent = `session ${ev.session} · ${ev.workspace}`;
+      { const L = ev.location || {};
+        $("meta").textContent = `session ${ev.session} · ` + (L.kind === "ssh" ? `⇄ ssh ${L.label}` : L.kind === "local" ? `▸ ${L.label}` : ev.workspace);
+        $("meta").title = L.kind === "ssh" ? `Claude Code / Codex agents run on ${L.host} in ${L.path}` : L.kind === "local" ? `Project folder: ${L.path}` : "Each agent works in its own folder"; }
       S.stt = ev.stt; renderVoice(); S.tts = ev.tts; renderTts(); loadAcks();
       renderPeople(); renderLog(); renderShared(); renderApprovals(); updateReplyHint();
       if (S.shared.length) show(S.shared[S.shared.length - 1].id, false);
       break;
+    case "bye": showEnded(); break;
     case "agent": {
       const prev = (S.agents.find(a => a.name === ev.agent.name) || {}).status;
       if (ev.agent.status === "thinking" && (prev === "idle" || prev === undefined)) acknowledge(ev.agent.name);
@@ -417,7 +448,8 @@ function handle(ev) {
       break;
     }
     case "shared": S.shared.push(ev.item); renderShared(); show(ev.item.id, true); break;
-    case "approval": S.approvals.set(ev.approval.id, ev.approval); renderApprovals(); break;
+    case "approval": { const isNew = !S.approvals.has(ev.approval.id); S.approvals.set(ev.approval.id, ev.approval); renderApprovals();
+      if (isNew) askPermission(ev.approval.agent); break; }
     case "approval_done": S.approvals.delete(ev.id); renderApprovals(); break;
     case "quota": S.quota = ev.quota; renderQuota(); break;
     case "stt": S.stt = ev.stt; renderVoice(); break;
@@ -448,6 +480,7 @@ function renderQuota() {
 setInterval(() => { if (S.quota) renderQuota(); }, 60000);
 function renderPeople() {
   room && room.setAgents(S.agents);
+  if (AM.name) renderAgentMenu();
   if (document.activeElement && document.activeElement.matches("#people select")) { S.peopleDirty = true; return; }  // don't close an open dropdown
   $("people").innerHTML = S.agents.map(a => {
     const busy = a.status === "thinking" || a.status === "working" || a.status === "waiting";
@@ -455,7 +488,7 @@ function renderPeople() {
     const use = u.turns ? ` · ctx ${(u.context_tokens / 1000).toFixed(0)}k${u.cost_usd != null ? " · $" + u.cost_usd.toFixed(2) : ""}` : "";
     const sub = a.status === "offline" ? a.offline_reason : `${a.model || a.provider} · ${STATUS[a.status] || a.status}${use}`;
     return `<div class="person ${busy ? "busy" : ""} ${a.status === "sleeping" ? "sleeping" : ""}"><i style="background:${esc(a.color)}"></i>
-      <div class="nm"><b data-m="${esc(a.name)}" title="Address ${esc(a.name)}">${esc(a.name)}</b><small title="${esc(sub)}">${esc(sub)}</small></div>
+      <div class="nm"><b data-m="${esc(a.name)}" title="Address ${esc(a.person)} (@${esc(a.name)})">${esc(a.person)} <em style="font-weight:400;font-style:normal;opacity:.55">@${esc(a.name)}</em></b><small title="${esc(sub)}">${esc(sub)}</small></div>
       ${(a.efforts || []).length ? `<select data-effort="${esc(a.name)}" class="${a.effort && a.effort !== "medium" ? "chip-auto" : ""}" title="Reasoning effort (applies from its next turn)">
         ${a.efforts.map(l => `<option value="${esc(l)}" ${a.effort === l ? "selected" : ""}>effort: ${esc(l)}</option>`).join("")}</select>` : ""}
       <button data-stop="${esc(a.name)}" ${busy ? "" : "disabled"}>Stop</button>
@@ -477,15 +510,71 @@ $("people").addEventListener("change", e => {
   const t = e.target.closest("[data-effort]"); if (t) send({ type: "set_effort", agent: t.dataset.effort, effort: t.value });
   e.target.blur && e.target.blur();
 });
+// ---------------- click-an-agent menu in the 3D room (same controls as the side panel)
+const AM = { name: null };
+function agentMenuHtml(a) {
+  const busy = a.status === "thinking" || a.status === "working" || a.status === "waiting";
+  const u = a.usage || {};
+  const use = u.turns ? ` · ctx ${(u.context_tokens / 1000).toFixed(0)}k${u.cost_usd != null ? " · $" + u.cost_usd.toFixed(2) : ""}` : "";
+  const sub = a.status === "offline" ? a.offline_reason : `${a.model || a.provider} · ${STATUS[a.status] || a.status}${use}`;
+  return `<div class="h"><i style="background:${esc(a.color)}"></i><b>${esc(a.person)} <em style="font-weight:400;font-style:normal;opacity:.55">@${esc(a.name)}</em></b><button class="x" data-am="close" title="Close (Esc)">✕</button></div>
+    <small title="${esc(sub)}">${esc(sub)}</small>
+    <div class="row"><button data-am="mention">@ Address ${esc(a.person)}</button></div>
+    ${(a.efforts || []).length ? `<div class="row"><label>Effort</label><select data-am="effort" class="${a.effort && a.effort !== "medium" ? "chip-auto" : ""}">
+      ${a.efforts.map(l => `<option value="${esc(l)}" ${a.effort === l ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>` : ""}
+    <div class="row"><label>Commands</label><button data-am="mode" class="${a.approval === "auto" ? "chip-auto" : ""}"
+      title="${a.approval === "auto" ? "Runs without asking. Click to require approval." : "Asks before running commands. Click to let it run freely."}">${a.approval === "auto" ? "Auto-run" : "Ask first"}</button></div>
+    <div class="row"><label></label><button data-am="stop" ${busy ? "" : "disabled"}>Stop</button></div>`;
+}
+function renderAgentMenu() {
+  const m = $("amenu"), a = S.agents.find(x => x.name === AM.name);
+  if (!a) return closeAgentMenu();
+  if (m.contains(document.activeElement) && document.activeElement.tagName === "SELECT") return;   // keep an open dropdown open
+  m.innerHTML = agentMenuHtml(a);
+}
+function openAgentMenu(name, x, y) {
+  AM.name = name; const m = $("amenu"); renderAgentMenu(); m.style.display = "block";
+  const r = $("game").getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(r.width - m.offsetWidth - 6, x - r.left + 12)) + "px";
+  m.style.top = Math.max(6, Math.min(r.height - m.offsetHeight - 6, y - r.top + 12)) + "px";
+}
+function closeAgentMenu() { AM.name = null; $("amenu").style.display = "none"; }
+$("amenu").addEventListener("click", e => {
+  const t = e.target.closest("[data-am]"); if (!t || t.tagName === "SELECT") return;
+  const a = S.agents.find(x => x.name === AM.name); if (!a) return;
+  const k = t.dataset.am;
+  if (k === "close") closeAgentMenu();
+  if (k === "mention") { insertMention(a.name); closeAgentMenu(); }
+  if (k === "stop") send({ type: "stop", agent: a.name });
+  if (k === "mode") send({ type: "set_approval", agent: a.name, mode: a.approval === "auto" ? "ask" : "auto" });
+});
+$("amenu").addEventListener("change", e => {
+  if (e.target.dataset.am === "effort" && AM.name) send({ type: "set_effort", agent: AM.name, effort: e.target.value });
+  e.target.blur();
+});
+document.addEventListener("pointerdown", e => {
+  if (AM.name && !e.target.closest("#amenu") && e.target.id !== "cv" && !e.target.closest(".lbl")) closeAgentMenu();
+});
+
 $("skipvoice").onclick = () => stopSpeech();
+let ended = false;
+function endMeeting() {
+  if (ended || !confirm("End the meeting? All agents stop and the room shuts down.")) return;
+  ended = true; send({ type: "quit" });
+}
+$("endmeeting").onclick = endMeeting;
+function showEnded() {
+  ended = true; if (ws) ws.onclose = null;
+  document.body.insertAdjacentHTML("beforeend", '<div style="position:fixed;inset:0;z-index:9999;background:#0e0907;color:#efe6d6;display:flex;flex-direction:column;align-items:center;justify-content:center;font:16px system-ui;gap:8px"><div style="font-size:28px;font-weight:600">Meeting ended</div><div style="color:#a8977f">The room has shut down. Minutes are in the session folder. You can close this tab.</div></div>');
+}
 $("stopall").onclick = () => { send({ type: "stop_all" }); stopSpeech(); };
 
 // ---------------- transcript
 function msgHtml(m) {
   const c = colorOf(m.from);
-  const to = m.to && m.to.length ? ` → ${m.to.map(esc).join(", ")}` : "";
-  return `<div class="msg ${esc(m.kind)}"><div class="mav" style="background:${esc(c)}">${esc((m.from[0] || "?").toUpperCase())}</div>
-    <div class="body"><div class="line1"><b>${esc(m.from)}</b><span>${hhmm(m.ts)}${to}</span></div>
+  const to = m.to && m.to.length ? ` → ${m.to.map(personOf).map(esc).join(", ")}` : "";
+  return `<div class="msg ${esc(m.kind)}"><div class="mav" style="background:${esc(c)}">${esc((personOf(m.from)[0] || "?").toUpperCase())}</div>
+    <div class="body"><div class="line1"><b>${esc(personOf(m.from))}</b>${S.agents.some(a => a.name === m.from) ? `<em style="font-weight:400;font-style:normal;opacity:.5;margin-left:5px">@${esc(m.from)}</em>` : ""}<span>${hhmm(m.ts)}${to}</span></div>
     <div class="txt">${md(m.text)}</div></div></div>`;
 }
 function renderLog() { $("log").innerHTML = S.messages.map(msgHtml).join(""); $("log").scrollTop = 1e9; count(); }
@@ -561,11 +650,11 @@ function mentionQuery() {
 }
 function updateSug() {
   const q = mentionQuery(); if (q === null) return hideSug();
-  sugItems = [...S.agents.map(a => ({ name: a.name, c: a.color, sub: a.model })), { name: "all", c: "#e8dcc4", sub: "everyone" }]
-    .filter(a => a.name.toLowerCase().startsWith(q));
+  sugItems = [...S.agents.map(a => ({ name: a.name, label: a.person, c: a.color, sub: `@${a.name} · ${a.model || a.provider}` })), { name: "all", c: "#e8dcc4", sub: "everyone" }]
+    .filter(a => a.name.toLowerCase().startsWith(q) || (a.label || "").toLowerCase().startsWith(q));
   if (!sugItems.length) return hideSug();
   sugSel = Math.min(sugSel, sugItems.length - 1);
-  sug.innerHTML = sugItems.map((a, i) => `<div class="${i === sugSel ? "sel" : ""}" data-i="${i}"><i style="background:${esc(a.c)}"></i>@${esc(a.name)} <small>${esc(a.sub || "")}</small></div>`).join("");
+  sug.innerHTML = sugItems.map((a, i) => `<div class="${i === sugSel ? "sel" : ""}" data-i="${i}"><i style="background:${esc(a.c)}"></i>${a.label ? esc(a.label) : "@" + esc(a.name)} <small>${esc(a.sub || "")}</small></div>`).join("");
   sug.style.display = "block";
 }
 function hideSug() { sug.style.display = "none"; sugItems = []; sugSel = 0; }
@@ -578,7 +667,7 @@ sug.addEventListener("mousedown", e => { const d = e.target.closest("[data-i]");
 box.addEventListener("input", () => { autosize(); updateSug(); updateReplyHint(); });
 function addressed(t) {
   if (/@[\w-]+/.test(t)) return true;
-  return S.agents.some(a => new RegExp(`(^|[^@\\w-])${a.name.replace(/[-_]/g, "[ -_]?")}(?![\\w-])(?!\\s+code\\b)`, "i").test(t));
+  return S.agents.some(a => [a.name, a.person].some(n => new RegExp(`(^|[^@\\w-])${n.replace(/[-_]/g, "[ -_]?")}(?![\\w-])(?!\\s+code\\b)`, "i").test(t)));
 }
 function openQuestion() {
   const last = [...S.messages].reverse().find(m => m.kind === "msg");
@@ -653,8 +742,8 @@ async function whisperStop(cancel = false) {
 }
 function spokenToMentions(t) {
   let s = t.trim();
-  for (const a of S.agents) {
-    const n = a.name.replace(/[-_]/g, "[ -_]?");
+  for (const a of S.agents) for (const nm of [a.name, a.person]) {
+    const n = nm.replace(/[-_]/g, "[ -_]?");
     s = s.replace(new RegExp(`^(hey |ok |okay )?${n}\\b[,:]?\\s*`, "i"), `@${a.name} `)
          .replace(new RegExp(`\\bat ${n}\\b`, "ig"), "@" + a.name)
          .replace(new RegExp(`(^|[^@\\w-])${n}(?![\\w-])(?!\\s+code\\b)`, "ig"), (m, p) => p + "@" + a.name);   // names anywhere
@@ -708,6 +797,8 @@ document.addEventListener("keydown", e => {
   else if (e.key === "Escape") {
     if (listening && W.stream) { e.preventDefault(); whisperStop(true); }
     else if ($("modal").style.display === "block") $("mClose").click();
+    else if (AM.name) closeAgentMenu();
+    else if (room && room.focused) room.setFocus(false);
   }
 });
 document.addEventListener("keyup", e => { if (e.code === "Space" && spaceHeld) { e.preventDefault(); spaceHeld = false; pttUp(); } });

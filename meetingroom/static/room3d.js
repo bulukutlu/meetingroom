@@ -56,6 +56,19 @@ function buildRoom(scene) {
   box(0.1, 3.4, 8, 0x9c875f, 3.8, 1.7, 0.6, scene);                                      // right wall
   box(10, 0.12, 0.06, 0x5a3a20, 0, 0.06, -1.9, scene);                                   // skirting
 
+  // exit door on the right wall: click it to end the meeting
+  const exitTex = canvasTex(32, 12, (g, w, h) => { g.fillStyle = "#0f3b1e"; g.fillRect(0, 0, w, h); g.fillStyle = "#7dff9a"; g.font = "bold 9px monospace"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("EXIT", w / 2, h / 2 + 1); });
+  const door = new THREE.Group(); door.position.set(3.74, 0, -0.75); scene.add(door);
+  box(0.06, 2.3, 1.1, 0x4e3119, 0, 1.15, 0, door);                                       // frame
+  const doorMat = mat(0x7a4a28); doorMat.emissive = new THREE.Color(0x000000);
+  box(0.05, 2.15, 0.94, doorMat, -0.03, 1.08, 0, door);                                  // leaf
+  box(0.02, 0.7, 0.34, 0x6a3f20, -0.065, 1.55, 0, door); box(0.02, 0.7, 0.34, 0x6a3f20, -0.065, 0.65, 0, door);   // panels
+  box(0.08, 0.06, 0.06, 0xd9b45a, -0.08, 1.05, 0.36, door);                              // handle
+  box(0.04, 0.2, 0.52, new THREE.MeshBasicMaterial({ map: exitTex }), -0.04, 2.42, 0, door); // exit sign
+  const doorMeshes = [];
+  door.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "door" }; doorMeshes.push(o); } });
+  scene.userData.doorMeshes = doorMeshes; scene.userData.doorMat = doorMat;
+
   // window with night sky + checkered curtains
   const night = canvasTex(48, 40, (g, w, h) => {
     const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#0d1640"); gr.addColorStop(1, "#24356b");
@@ -322,7 +335,36 @@ function buildChar(color, face, pants) {
   mesh.bind(new THREE.Skeleton(bones));
   mesh.frustumCulled = false;
   const group = new THREE.Group(); group.add(mesh);
-  return { root: group, upper: spine, head, armL: shL, armR: shR, elbowL: elL, elbowR: elR, legL: thL, legR: thR, kneeL: knL, kneeR: knR };
+  // hover outline: inverted hull sharing the skeleton, pushed out along the skinned normals
+  const olMat = new THREE.MeshBasicMaterial({ color: 0xcfc2a6, side: THREE.DoubleSide,
+    stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc })   // only outside the body silhouette;
+  // push along the radial direction away from each vertex's main bone segment (robust to mixed face winding)
+  root.updateMatrixWorld(true);
+  const segs = bones.map(bn => {
+    const p0 = bn.getWorldPosition(new THREE.Vector3()), kid = bn.children.find(k => k.isBone);
+    const p1 = kid ? kid.getWorldPosition(new THREE.Vector3()) : bn === head ? p0.clone().add(new THREE.Vector3(0, 0.12, 0))
+      : bn.parent && bn.parent.isBone && bn !== root ? p0.clone().add(bn.position) : p0.clone();
+    return [p0, p1];
+  });
+  const od = new Float32Array(pos.length), line = new THREE.Line3(), cp = new THREE.Vector3();
+  for (let i = 0; i < pos.length / 3; i++) {
+    let bi = 0, bw = -1; for (let k = 0; k < 4; k++) if (sw[i * 4 + k] > bw) { bw = sw[i * 4 + k]; bi = si[i * 4 + k]; }
+    v3.fromArray(pos, i * 3); line.set(segs[bi][0], segs[bi][1]); line.closestPointToPoint(v3, true, cp);
+    cp.subVectors(v3, cp); if (cp.lengthSq() < 1e-8) cp.set(0, 1, 0); cp.normalize().toArray(od, i * 3);
+  }
+  g.setAttribute("outdir", new THREE.BufferAttribute(od, 3));
+  olMat.onBeforeCompile = sh => {
+    sh.vertexShader = "attribute vec3 outdir;\n" + sh.vertexShader.replace("#include <skinning_vertex>",
+      "#include <skinning_vertex>\n  transformed += normalize((skinMatrix * vec4(outdir, 0.0)).xyz) * 0.014;");
+  };
+  const outline = new THREE.SkinnedMesh(g, olMat);
+  outline.bind(mesh.skeleton, mesh.bindMatrix.clone());
+  outline.frustumCulled = false; outline.visible = false; outline.renderOrder = 1; group.add(outline);
+  for (const m of [bodyMat, faceMat]) Object.assign(m, { stencilWrite: true, stencilRef: 1, stencilZPass: THREE.ReplaceStencilOp });
+  // invisible, generous pick volume (raycasting a skinned mesh is slow and fiddly)
+  const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 1.7, 8), new THREE.MeshBasicMaterial());
+  hit.position.y = 0.85; hit.visible = false; group.add(hit);
+  return { root: group, outline, hit, bodyMat, upper: spine, head, armL: shL, armR: shR, elbowL: elL, elbowR: elR, legL: thL, legR: thR, kneeL: knL, kneeR: knR };
 }
 
 // ---------------------------------------------------------------- homography (sharp DOM onto the CRT)
@@ -337,15 +379,16 @@ function quadTransform(w, h, dst) {
 }
 
 // ---------------------------------------------------------------- public API
-export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, overlayH = 600 }) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, overlayH = 600, onPick = () => {}, onFocusChange = () => {} }) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: true });
   renderer.setPixelRatio(1);
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x1a120c);
   scene.fog = new THREE.Fog(0x1a120c, 6, 11);
   scene.add(new THREE.HemisphereLight(0xffdcae, 0x3a2716, 1.25));
   const moon = new THREE.DirectionalLight(0x8fa6ff, 0.35); moon.position.set(-3, 3, 1); scene.add(moon);
-  const { screen, term } = buildRoom(scene);
+  const { screen, term, mon } = buildRoom(scene);
+  overlay.style.pointerEvents = "none";
 
   const camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.05, 30);
   const ROOM_POS = new THREE.Vector3(-1.3, 2.25, 4.3), ROOM_LOOK = new THREE.Vector3(0.1, 0.92, -0.4);
@@ -387,13 +430,18 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
         const el = document.createElement("div"); el.className = "lbl";
         el.innerHTML = `<div class="bubble"></div><div class="tag"><i style="background:${a.color}"></i><b></b><span></span></div>`;
         labels.appendChild(el);
+        rig.hit.userData.pick = { kind: "agent", name: a.name };
+        const tag = el.querySelector(".tag"); tag.style.pointerEvents = "auto"; tag.style.cursor = "pointer";
+        tag.addEventListener("mouseenter", () => { tagHover = a.name; });
+        tag.addEventListener("mouseleave", () => { if (tagHover === a.name) tagHover = null; });
+        tag.addEventListener("click", e => { e.stopPropagation(); if (!focus) onPick({ kind: "agent", name: a.name, x: e.clientX, y: e.clientY }); });
         c = { name: a.name, rig, home, chairYaw, pos: rig.root.position, yaw: Math.PI, el, idx: i, phase: Math.random() * 6,
               sit: 0, lean: 0, armX: 0, legX: 0, walk: 0, saying: null, sayUntil: 0, arrived: false, lastActive: performance.now(), doze: 0 };
         chars.set(a.name, c);
       }
       c.status = a.status; c.activity = a.activity || ""; c.color = a.color;
       c.busy = a.status === "thinking" || a.status === "working";
-      c.el.querySelector("b").textContent = a.name;
+      c.el.querySelector("b").textContent = a.person || a.name;
       c.el.querySelector("span").textContent = a.status === "offline" ? "offline" : a.status === "sleeping" ? "sleeping" : "";
     });
   }
@@ -536,6 +584,52 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     return pts;
   }
 
+  // ---------------- mouse interaction: hover highlight + click to pick
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  const monMeshes = []; mon.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "monitor" }; monMeshes.push(o); } });
+  const monMats = monMeshes.map(o => o.material).filter(m => m.emissive);
+  const doorMeshes = scene.userData.doorMeshes || [], doorMat = scene.userData.doorMat;
+  let pointer = null, hovered = null, tagHover = null;
+  canvas.addEventListener("pointermove", e => { pointer = { x: e.clientX, y: e.clientY }; });
+  canvas.addEventListener("pointerleave", () => { pointer = null; });
+  function pickAt(p) {
+    if (!p || focus) return null;
+    const r = canvas.getBoundingClientRect();
+    ndc.set((p.x - r.left) / r.width * 2 - 1, -((p.y - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const targets = [...monMeshes, ...doorMeshes]; for (const c of chars.values()) targets.push(c.rig.hit);
+    const h = ray.intersectObjects(targets, false)[0];
+    return h ? h.object.userData.pick : null;
+  }
+  const sameP = (a, b) => (a && a.kind) === (b && b.kind) && (a && a.name) === (b && b.name);
+  function setHover(p) {
+    if (sameP(p, hovered)) return;
+    hovered = p;
+    for (const c of chars.values()) {
+      const on = !!p && p.kind === "agent" && p.name === c.name;
+      c.rig.outline.visible = on; c.rig.bodyMat.emissive.setHex(on ? 0x14110c : 0x000000);
+      c.el.classList.toggle("hover", on);
+    }
+    const monOn = !!p && p.kind === "monitor";
+    for (const m of monMats) m.emissive.setHex(monOn ? 0x1e1a12 : 0x000000);
+    if (doorMat) doorMat.emissive.setHex(p && p.kind === "door" ? 0x3a2a10 : 0x000000);
+    canvas.style.cursor = p ? "pointer" : focus ? "zoom-out" : "";
+  }
+  canvas.addEventListener("click", e => {
+    if (focus) { setFocus(false); return; }                 // click beside the zoomed monitor: back to the room
+    const p = pickAt({ x: e.clientX, y: e.clientY });
+    if (p && p.kind === "monitor") { setFocus(true); return; }
+    onPick(p ? { ...p, x: e.clientX, y: e.clientY } : null);
+  });
+  function setFocus(v) {
+    if (focus === v) return;
+    focus = v; labels.classList.toggle("focus", v);
+    overlay.style.pointerEvents = v ? "auto" : "none";     // in room view, clicks on the screen go to the 3D monitor
+    if (v) setHover(null);
+    canvas.style.cursor = v ? "zoom-out" : "";
+    onFocusChange(v);
+  }
+
   let last = performance.now();
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
@@ -548,6 +642,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     camera.lookAt(camLook);
     camera.updateMatrixWorld();
     for (const c of chars.values()) updateChar(c, dt, t);
+    setHover(tagHover && !focus ? { kind: "agent", name: tagHover } : pickAt(pointer));
     if (!screenActive) drawTerm(now);
     renderer.render(scene, camera);
     if (screenActive) { overlay.style.transform = quadTransform(overlayW, overlayH, screenQuad()); }
@@ -560,6 +655,6 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     nod(name) { const c = chars.get(name); if (c) c.nodUntil = performance.now() + 700; },
     typingCount() { let n = 0; for (const c of chars.values()) if (c.busy && c.arrived && c.status !== "waiting") n++; return n; },
     setScreen(active) { screenActive = active; overlay.style.display = active ? "block" : "none"; if (!active) lines.length = 0; },
-    setFocus(v) { focus = v; labels.classList.toggle("focus", v); }, get focused() { return focus; },
+    setFocus, get focused() { return focus; },
   };
 }

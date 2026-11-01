@@ -47,10 +47,12 @@ class Speaker:
         self.detail = ""
         self._lock = threading.Lock()
         self.acks: dict[str, list[bytes]] = {}   # agent -> short "on it" clips, made once at startup
+        self.perms: dict[str, list[bytes]] = {}  # agent -> "I need your permission" clips
 
     def public(self) -> dict:
         return {"status": self.status, "detail": self.detail, "voices": self.voices,
-                "acks": {k: len(v) for k, v in self.acks.items()}}
+                "acks": {k: len(v) for k, v in self.acks.items()},
+                "perms": {k: len(v) for k, v in self.perms.items()}}
 
     def _download(self, name: str):
         dest = self.dir / name
@@ -79,6 +81,7 @@ class Speaker:
             print(f"  narration: Kokoro ready ({time.time() - t:.1f}s warm-up)", flush=True)
             for agent in self.voices:          # acknowledgement clips for instant playback
                 self.acks[agent] = [self.synth_wav(p, agent) for p in ACK_PHRASES]
+                self.perms[agent] = [self.synth_wav(p, agent) for p in PERMISSION_PHRASES]
         except Exception as e:
             self.status, self.detail = "error", f"{type(e).__name__}: {e}"
             print(f"  narration: Kokoro unavailable, using browser voices ({self.detail})", flush=True)
@@ -96,6 +99,7 @@ class Speaker:
         return buf.getvalue()
 
 
+PERMISSION_PHRASES = ["I need your permission for this.", "Can I get your approval, please?", "I need a permission here."]
 ACK_PHRASES = ["Mm-hm.", "On it.", "Got it.", "Okay.", "Sure.", "Right."]
 
 
