@@ -15,6 +15,9 @@ import time
 import numpy as np
 
 SAMPLE_RATE = 16000
+_MODELS: dict = {}
+_LOAD_LOCK = threading.Lock()    # rooms opened together load the model once
+_RUN_LOCK = threading.Lock()     # one model shared by every room: one transcription at a time   # (engine, model) -> loaded model, kept for the next room in this process
 DEFAULT_MODELS = {
     "mlx": "mlx-community/whisper-large-v3-turbo",
     "faster": "large-v3-turbo",
@@ -52,6 +55,10 @@ class Transcriber:
 
     # ---------------- loading (runs in a background thread at startup)
     def load(self):
+        with _LOAD_LOCK:
+            self._load()
+
+    def _load(self):
         if self.wanted == "browser":
             return
         if self.wanted == "echo":
@@ -68,13 +75,20 @@ class Transcriber:
                 from faster_whisper import WhisperModel
                 self.engine = "faster"
                 self.model_name = self.model_name or DEFAULT_MODELS["faster"]
+                if ("faster", self.model_name) in _MODELS:
+                    self.model, self.status = _MODELS["faster", self.model_name], "ready"
+                    return
                 print(f"  voice: loading Whisper '{self.model_name}' (first time downloads it) ...", flush=True)
                 self.model = WhisperModel(self.model_name, device="auto", compute_type="int8")
             else:
                 self.model_name = self.model_name or DEFAULT_MODELS["mlx"]
+                if ("mlx", self.model_name) in _MODELS:   # mlx_whisper keeps the weights itself
+                    self.status = "ready"
+                    return
                 print(f"  voice: loading Whisper '{self.model_name}' (first time downloads ~1.6 GB) ...", flush=True)
             t = time.time()
             self._run(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm-up (and download)
+            _MODELS[self.engine, self.model_name] = self.model
             self.status = "ready"
             print(f"  voice: Whisper ready ({self.engine}, {time.time() - t:.1f}s warm-up)", flush=True)
         except Exception as e:
@@ -171,7 +185,7 @@ class Transcriber:
         audio = self.trim_silence(audio)
         if len(audio) < SAMPLE_RATE * 0.3:
             return ""
-        with self._lock:
+        with _RUN_LOCK:
             text = self.strip_term_lists(self.clean(self._run(audio, prev).strip()))
         if not re.search(r"\w", text):   # only punctuation left ('.', '...')
             return ""

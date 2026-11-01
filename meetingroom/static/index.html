@@ -29,7 +29,10 @@ header{display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px
 .rec{width:9px;height:9px;background:var(--red);box-shadow:0 0 0 3px #e56b5b33}
 .meta{color:var(--dim);font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 header .spacer{flex:1 1 0;min-width:0}
-header{gap:10px;overflow:hidden}
+header{gap:7px;overflow:hidden}
+header .toggle,header .conn{font-size:11px;gap:4px}
+header .vchip{font-size:10.5px;padding:1px 6px}
+header button{font-size:11px;padding:3px 7px}
 header>*{flex-shrink:0;white-space:nowrap}
 header>.meta{flex-shrink:1}
 .conn{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
@@ -239,9 +242,9 @@ textarea:focus{border-color:#5d4a35}
   <span class="vchip" id="quota" style="display:none">Quota</span>
   <span class="vchip" id="voice">Voice</span>
   <label class="toggle" title="Acknowledgement sounds and keyboard clicks"><input type="checkbox" id="sounds" checked> Sounds</label>
-  <label class="toggle"><input type="checkbox" id="tts"> <span id="ttsLabel">Read replies aloud</span></label>
-  <label class="toggle"><input type="checkbox" id="autosend"> Send voice when I stop</label>
-  <button class="ghost" id="skipvoice" title="Stop the voice reading aloud now (agents keep working). Key: S">Skip voice</button>
+  <label class="toggle"><input type="checkbox" id="tts"> <span id="ttsLabel">Read aloud</span></label>
+  <label class="toggle" title="Send voice when I stop talking"><input type="checkbox" id="autosend"> Auto-send</label>
+  <button class="ghost" id="skipvoice" title="Stop the voice reading aloud now (agents keep working). Key: S">Skip</button>
   <button class="ghost" id="stopall" title="Stop every agent">Stop all</button>
   <button class="ghost" id="endmeeting" title="End the meeting and shut the room down (or click the door in the room)">Exit &#128682;</button>
   <div class="conn" id="conn"><i></i><span>connecting</span></div>
@@ -300,7 +303,8 @@ import { createRoom } from "/static/room3d.js";
 
 // --- token: read once, keep in this tab only, scrub from the address bar
 const qs = new URLSearchParams(location.search);
-if (qs.get("t")) { sessionStorage.setItem("mr_t", qs.get("t")); history.replaceState(null, "", "/"); }
+if (qs.get("t")) { sessionStorage.setItem("mr_t", qs.get("t")); history.replaceState(null, "", location.pathname); }
+const BASE = location.pathname.replace(/\/+$/, "");   // this room's path on the hub: /r/<id>
 const TOKEN = sessionStorage.getItem("mr_t") || "";
 
 const $ = id => document.getElementById(id);
@@ -323,7 +327,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 const personOf = h => (S.agents.find(a => a.name === h) || {}).person || h;
 const colorOf = name => (S.agents.find(a => a.name === name) || {}).color || (name === S.user ? "#e8dcc4" : "#76664f");
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const fileUrl = id => `/files/${id}?t=${encodeURIComponent(TOKEN)}`;
+const fileUrl = id => `${BASE}/files/${id}?t=${encodeURIComponent(TOKEN)}`;
 const plain = t => String(t).replace(/```[\s\S]*?```/g, "[code]").replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
 
 function md(src) {
@@ -392,13 +396,13 @@ async function loadAcks() {
   for (const [agent, n] of Object.entries(S.tts.acks)) {
     AU.acks[agent] = [];
     for (let i = 0; i < n; i++) {
-      try { const r = await fetch(`/tts/ack/${encodeURIComponent(agent)}/${i}${q}`); AU.acks[agent].push(await c.decodeAudioData(await r.arrayBuffer())); } catch (e) {}
+      try { const r = await fetch(`${BASE}/tts/ack/${encodeURIComponent(agent)}/${i}${q}`); AU.acks[agent].push(await c.decodeAudioData(await r.arrayBuffer())); } catch (e) {}
     }
   }
   for (const [agent, n] of Object.entries(S.tts.perms || {})) {
     AU.perms[agent] = [];
     for (let i = 0; i < n; i++) {
-      try { const r = await fetch(`/tts/perm/${encodeURIComponent(agent)}/${i}${q}`); AU.perms[agent].push(await c.decodeAudioData(await r.arrayBuffer())); } catch (e) {}
+      try { const r = await fetch(`${BASE}/tts/perm/${encodeURIComponent(agent)}/${i}${q}`); AU.perms[agent].push(await c.decodeAudioData(await r.arrayBuffer())); } catch (e) {}
     }
   }
 }
@@ -408,7 +412,7 @@ async function askPermission(name) {   // spoken "I need your permission" when a
   if (list && list.length) return playBuffer(list[Math.floor(Math.random() * list.length)], 0.95);
   if (ttsReady()) {   // clip not preloaded yet: fetch one now instead of falling back
     try {
-      const r = await fetch(`/tts/perm/${encodeURIComponent(key)}/0?t=${encodeURIComponent(TOKEN)}`);
+      const r = await fetch(`${BASE}/tts/perm/${encodeURIComponent(key)}/0?t=${encodeURIComponent(TOKEN)}`);
       if (r.ok) { const b = await actx().decodeAudioData(await r.arrayBuffer()); (AU.perms[key] = AU.perms[key] || []).push(b); return playBuffer(b, 0.95); }
     } catch (e) {}
   }
@@ -459,7 +463,7 @@ function keyClick(soft) {
 // ---------------- connection
 function connect() {
   const c = $("conn");
-  ws = new WebSocket(`ws://${location.host}/ws?t=${encodeURIComponent(TOKEN)}`);
+  ws = new WebSocket(`ws://${location.host}${BASE}/ws?t=${encodeURIComponent(TOKEN)}`);
   ws.onopen = () => { retry = 0; c.className = "conn on"; c.lastChild.textContent = "live on this computer"; sendPrefs(); };
   ws.onclose = ev => {
     c.className = "conn"; c.lastChild.textContent = ev.code === 4403 ? "access denied: reopen the link from the terminal" : "reconnecting…";
@@ -484,7 +488,7 @@ function handle(ev) {
       renderPeople(); renderLog(); renderShared(); renderApprovals(); updateReplyHint();
       if (S.shared.length) show(S.shared[S.shared.length - 1].id, false);
       break;
-    case "bye": showEnded(ev.minutes); break;
+    case "bye": showEnded(ev.minutes, ev.next); break;
     case "agent": {
       const prev = (S.agents.find(a => a.name === ev.agent.name) || {}).status;
       if (ev.agent.status === "thinking" && (prev === "idle" || prev === undefined)) acknowledge(ev.agent.name);
@@ -624,13 +628,40 @@ document.addEventListener("pointerdown", e => {
 
 $("skipvoice").onclick = () => stopSpeech();
 let ended = false;
+const LOBBY = () => "/?t=" + encodeURIComponent(TOKEN);
 function endMeeting() {
-  if (ended || !confirm("End the meeting? All agents stop and the room shuts down.")) return;
-  ended = true; send({ type: "quit" });
+  if (ended || $("exitdlg")) return;
+  const btn = "padding:10px 16px;border:2px solid #000;border-radius:6px;font:600 14px system-ui;cursor:pointer";
+  document.body.insertAdjacentHTML("beforeend", `<div id="exitdlg" style="position:fixed;inset:0;z-index:9998;background:#000a;display:flex;align-items:center;justify-content:center">
+    <div style="background:#1b1510;border:2px solid #46382a;border-radius:10px;padding:20px 22px;max-width:480px;box-shadow:0 10px 30px #000c;font:15px system-ui;color:#efe6d6">
+      <div style="font-size:19px;font-weight:600;margin-bottom:6px">Leave this room?</div>
+      <div style="color:#a8977f;margin-bottom:16px"><b style="color:#efe6d6">Corridor</b> keeps this room running (agents keep working) so you can come back through its door.
+        <b style="color:#efe6d6">Close room</b> stops its agents and saves the minutes. <b style="color:#efe6d6">Quit</b> closes every room and the app.</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+        <button data-x="cancel" style="${btn};background:#2e241b;color:#efe6d6">Cancel</button>
+        <button data-x="quit" style="${btn};background:#5a2620;color:#efe6d6">Quit the app</button>
+        <button data-x="close" style="${btn};background:#4a3a24;color:#efe6d6">Close room</button>
+        <button data-x="lobby" style="${btn};background:#f0b44a;color:#1a120c">Corridor</button>
+      </div></div></div>`);
+  const d = $("exitdlg"), close = () => { d.remove(); document.removeEventListener("keydown", esc); };
+  const esc = e => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", esc);
+  d.onclick = e => {
+    const k = (e.target.closest("[data-x]") || {}).dataset?.x;
+    if (e.target === d || k === "cancel") return close();
+    if (k === "lobby") { stopSpeech && stopSpeech(); location.href = LOBBY(); return; }
+    if (k === "quit" && !confirm("Close every room and quit the app?")) return;
+    if (k === "quit" || k === "close") { close(); ended = true; send({ type: k === "close" ? "close_room" : "quit" }); }
+  };
+  d.querySelector('[data-x="lobby"]').focus();
 }
 $("endmeeting").onclick = endMeeting;
-function showEnded(m) {
+function showEnded(m, next) {
   ended = true; if (ws) ws.onclose = null;
+  if (next === "lobby") {
+    document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;inset:0;z-index:9999;background:#0e0907;color:#efe6d6;display:flex;flex-direction:column;align-items:center;justify-content:center;font:15px system-ui"><div style="font-size:26px;font-weight:600">Room closed</div><div style="color:#a8977f;margin-top:8px">Minutes saved${m && m.current ? ` at <code style="color:#efe6d6">${String(m.current).replace(/[&<>]/g, "")}</code>` : ""}. Back to the corridor…</div></div>`);
+    setTimeout(() => location.replace(LOBBY()), 1400); return;
+  }
   const esc = t => String(t).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const sess = (m && m.sessions) || [];
   const cur = sess.find(x => x.current);
@@ -741,13 +772,13 @@ async function markContent(s) {
   if (s.kind === "image") return `<div class="stage fit"><div class="surf img" data-surf="0"><img src="${url}" alt="">${L}</div></div>`;
   if (s.kind === "pdf") {
     let info = { pages: 0 };
-    try { info = await (await fetch(`/files/${s.id}/pdf?${qT()}`)).json(); } catch (e) {}
+    try { info = await (await fetch(`${BASE}/files/${s.id}/pdf?${qT()}`)).json(); } catch (e) {}
     if (!info.pages) {   // no PDF renderer on the server: view only, and say why
       setTimeout(() => { $("mHint").textContent = "PDF marking needs pypdfium2 in the Python running the server (pip install pypdfium2), then restart"; });
       return `<iframe src="${url}"></iframe>`;
     }
     return `<div class="stage">${Array.from({ length: info.pages }, (_, i) =>
-      `<div class="surf pg" data-surf="${i}"><img loading="lazy" src="/files/${s.id}/page/${i}?${qT()}" alt="page ${i + 1}" style="aspect-ratio:${info.sizes[i][0]}/${info.sizes[i][1]}">${L}</div>`).join("")}</div>`;
+      `<div class="surf pg" data-surf="${i}"><img loading="lazy" src="${BASE}/files/${s.id}/page/${i}?${qT()}" alt="page ${i + 1}" style="aspect-ratio:${info.sizes[i][0]}/${info.sizes[i][1]}">${L}</div>`).join("")}</div>`;
   }
   if (s.kind === "text") {
     const t = await (await fetch(url)).text(); MK.raw = t;
@@ -810,7 +841,7 @@ function textInfo(surf, range) {   // selected text + its lines in the source fi
 async function addMark(req) {
   const s = MK.item; if (!s) return;
   try {
-    const r = await fetch(`/annotate?${qT()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item: s.id, ...req }) });
+    const r = await fetch(`${BASE}/annotate?${qT()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item: s.id, ...req }) });
     const a = await r.json(); if (a.error) throw new Error(a.error);
     MK.pending.push(a); renderChips(); drawMarks();
     if (!box.value.trim()) box.placeholder = "Say (hold Space) or type what you want done with the marked part…";
@@ -974,9 +1005,9 @@ setInterval(() => { if (!$("gate").classList.contains("hide")) renderGate(); }, 
 function renderVoice() {
   renderGate();
   const v = $("voice"), st = S.stt || {};
-  if (st.status === "ready") { v.textContent = "Voice: Whisper (local)"; v.className = "vchip ok"; v.title = `${st.engine} · ${st.model} · audio stays on this computer`; }
-  else if (st.status === "loading") { v.textContent = "Voice: loading Whisper…"; v.className = "vchip wait"; v.title = "First start downloads the model once. Browser speech is used meanwhile."; }
-  else { v.textContent = "Voice: browser"; v.className = "vchip"; v.title = st.detail || "Browser speech recognition (Chrome/Edge send audio to their speech service)."; }
+  if (st.status === "ready") { v.textContent = "Whisper"; v.className = "vchip ok"; v.title = `${st.engine} · ${st.model} · audio stays on this computer`; }
+  else if (st.status === "loading") { v.textContent = "Whisper…"; v.className = "vchip wait"; v.title = "First start downloads the model once. Browser speech is used meanwhile."; }
+  else { v.textContent = "Browser voice"; v.className = "vchip"; v.title = st.detail || "Browser speech recognition (Chrome/Edge send audio to their speech service)."; }
 }
 // Push-to-talk: record while Space (or the mic button) is held, then transcribe
 // the whole recording at once on this computer. Audio is captured at 16 kHz so
@@ -1012,7 +1043,7 @@ async function whisperStop(cancel = false) {
   const pcm = W.buf.slice(0, W.len);
   W.busy = true; $("mic").classList.add("busy"); box.placeholder = "Transcribing on this computer…";
   try {
-    const r = await fetch(`/stt?t=${encodeURIComponent(TOKEN)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: pcm.buffer });
+    const r = await fetch(`${BASE}/stt?t=${encodeURIComponent(TOKEN)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: pcm.buffer });
     const j = await r.json();
     if (j.error) throw new Error(j.error);
     if (j.text) { box.value = base + spokenToMentions(j.text); autosize(); updateReplyHint(); if ($("autosend").checked) submit(); }
@@ -1095,7 +1126,7 @@ const NQ = { queue: [], playing: false, audio: null, gen: 0, hold: false };
 const ttsReady = () => S.tts && S.tts.status === "ready";
 function renderTts() {
   const st = S.tts || {}, l = $("ttsLabel");
-  l.textContent = st.status === "ready" ? "Read replies aloud (Kokoro)" : st.status === "loading" ? "Read replies aloud (loading…)" : "Read replies aloud";
+  l.textContent = st.status === "ready" ? "Read aloud" : st.status === "loading" ? "Read aloud…" : "Read aloud";
   l.parentElement.title = st.status === "ready" ? "Natural voices generated on this computer" : (st.detail || "Browser voices");
 }
 function setSpeaking(m) {
@@ -1136,9 +1167,9 @@ async function playNext() {
   if (!ttsReady()) { browserSpeak(m, () => { if (gen === NQ.gen) playNext(); }); return; }
   const q = `?t=${encodeURIComponent(TOKEN)}`, json = { "Content-Type": "application/json" };
   try {
-    const { parts } = await (await fetch("/tts/msg" + q, { method: "POST", headers: json, body: JSON.stringify({ mid: m.id }) })).json();
+    const { parts } = await (await fetch(BASE + "/tts/msg" + q, { method: "POST", headers: json, body: JSON.stringify({ mid: m.id }) })).json();
     let idx = 0;
-    const wav = () => { const i = idx++; return fetch(`/tts/msg/${m.id}/${i}${q}`).then(r => r.ok ? r.blob() : null); };
+    const wav = () => { const i = idx++; return fetch(`${BASE}/tts/msg/${m.id}/${i}${q}`).then(r => r.ok ? r.blob() : null); };
     let next = parts.length ? wav() : null;                   // fetch sentence i+1 while i plays
     for (let i = 0; i < parts.length; i++) {
       const blob = await next; next = i + 1 < parts.length ? wav() : null;

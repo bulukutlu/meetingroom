@@ -386,7 +386,7 @@ def bridge_env(a: Agent, drop_key: str) -> dict:
     """Environment for a CLI agent: tells the MCP bridge how to reach the hub and
     removes the API key variable so the CLI uses the user's own login."""
     env = dict(os.environ)
-    env.update({"MR_URL": f"http://127.0.0.1:{a.room.port}", "MR_TOKEN": a.room.token, "MR_AGENT": a.name,
+    env.update({"MR_URL": f"http://127.0.0.1:{a.room.port}{a.room.base}", "MR_TOKEN": a.room.token, "MR_AGENT": a.name,
                 "MR_HOST": f"127.0.0.1:{a.room.port}", "MR_UPLOAD": "0"})
     env.pop(drop_key, None)
     return env

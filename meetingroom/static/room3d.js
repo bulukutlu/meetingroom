@@ -55,6 +55,20 @@ function buildRoom(scene) {
   });
   plank.wrapS = plank.wrapT = THREE.RepeatWrapping; plank.repeat.set(6, 5);
   box(10, 0.1, 8, mat(0xffffff, { map: plank }), 0, -0.05, 0.6, scene);                 // floor
+  // each room (/r/<id>) gets its own carpet colour, picked from a fixed palette by hashing the id
+  const CARPETS = [["#5a1414", "#7d1f1f", "#8e2727", "#6a1818"], ["#14305a", "#1f4a7d", "#275a8e", "#183a6a"], ["#14502a", "#1f7d3f", "#278e4c", "#186a33"],
+                   ["#4a1a5a", "#6e2a7d", "#7d338e", "#5a2068"], ["#5a3d14", "#8a5f1f", "#9c6d27", "#6a4818"], ["#124d52", "#1c7880", "#238b94", "#16606a"],
+                   ["#5a1442", "#7d1f5e", "#8e276b", "#6a184f"], ["#3a3f48", "#58606c", "#667080", "#464c56"]];
+  const rid = (location.pathname.match(/\/r\/([^/]+)/) || [])[1] || "";
+  let hsh = 0; for (const ch of rid) hsh = (hsh * 31 + ch.charCodeAt(0)) >>> 0;
+  const [cDark, cMid, cLight, cShade] = CARPETS[hsh % CARPETS.length];
+  const rug = canvasTex(64, 48, (g, w, h) => {   // rug: dark border, gold stripe, woven centre in the room's colour
+    g.fillStyle = cDark; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#c9a14a"; g.fillRect(3, 3, w - 6, h - 6);
+    g.fillStyle = cMid; g.fillRect(4, 4, w - 8, h - 8);
+    for (let y = 6; y < h - 6; y++) for (let x = 6; x < w - 6; x++) { g.fillStyle = (x + y) % 4 === 0 ? cLight : (x * 3 + y) % 7 === 0 ? cShade : cMid; g.fillRect(x, y, 1, 1); }
+  });
+  box(3.4, 0.02, 2.5, mat(0xffffff, { map: rug }), 0, 0.01, -0.08, scene);              // rug under the table
   box(10, 3.4, 0.1, 0xa89268, 0, 1.7, -1.95, scene);                                     // back wall
   box(0.1, 3.4, 8, 0x9c875f, -3.8, 1.7, 0.6, scene);                                     // left wall
   box(0.1, 3.4, 8, 0x9c875f, 3.8, 1.7, 0.6, scene);                                      // right wall
@@ -579,7 +593,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const k = 1 - Math.pow(0.002, dt);
     c.sit = lerp(c.sit, pose === "sit" ? 1 : 0, k);
     c.lean = lerp(c.lean, pose === "lean" ? 1 : pose === "sit" && c.busy ? 0.25 : 0, k);
-    r.root.position.y = -0.33 * c.sit;
+    r.root.position.y = -0.26 * c.sit;
     const swing = moving ? Math.sin(c.walk) * 0.6 : 0;
     r.legL.rotation.x = lerp(0, -1.5, c.sit) + swing; r.legR.rotation.x = lerp(0, -1.5, c.sit) - swing;
     r.kneeL.rotation.x = lerp(0, 1.5, c.sit) + (moving ? Math.max(0, -swing) * 0.9 : 0);
@@ -616,7 +630,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     r.head.rotation.z = dz * (c.idx % 2 ? 0.2 : -0.2) * (1 - jolt * 0.6);
 
     // label + bubble
-    tmp.set(0, 2.0 - 0.33 * c.sit, 0); r.root.localToWorld(tmp); tmp.project(camera);
+    tmp.set(0, 2.0 - 0.26 * c.sit, 0); r.root.localToWorld(tmp); tmp.project(camera);
     const W = wrap.clientWidth, H = wrap.clientHeight;
     const vis = tmp.z < 1;
     c.el.style.display = vis ? "" : "none";
@@ -695,8 +709,14 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     onFocusChange(v);
   }
 
-  let last = performance.now();
+  const frameInterval = 1000 / 30;  // keep animation cost independent of monitor refresh rate
+  let last = performance.now(), lastFrame = last;
   function frame(now) {
+    requestAnimationFrame(frame);
+    if (document.hidden || !wrap.clientWidth || !wrap.clientHeight) { last = lastFrame = now; return; }
+    const elapsed = now - lastFrame;
+    if (elapsed < frameInterval - 0.01) return;
+    lastFrame += Math.floor((elapsed + 0.01) / frameInterval) * frameInterval;
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
     const t = now / 1000;
     focusK = lerp(focusK, focus ? 1 : 0, 1 - Math.pow(0.02, dt));
@@ -714,7 +734,6 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     if (!screenActive) drawTerm(now);
     renderer.render(scene, camera);
     if (screenActive) { overlay.style.transform = quadTransform(overlayW, overlayH, screenQuad()); }
-    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 

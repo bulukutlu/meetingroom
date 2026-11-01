@@ -24,7 +24,10 @@ from pathlib import Path
 
 BRIDGE = Path(__file__).with_name("mcp_bridge.py")
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30"]
-_PICKER_CP = os.path.join(tempfile.gettempdir(), "mr-pick-%C")
+# ssh sockets: macOS $TMPDIR is long enough that $TMPDIR/name-%C plus ssh's temp suffix
+# overflows the 104-byte sun_path limit, so prefer the short /tmp.
+_SOCK_DIR = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+_PICKER_CP = os.path.join(_SOCK_DIR, "mr-pick-%C")
 
 
 def rpath(p: str) -> str:
@@ -118,6 +121,7 @@ class Location:
     bins: dict = field(default_factory=dict)   # remote executables (ssh)
     rport: int = 0              # remote end of the reverse tunnel to the hub
     cp: str = ""                # ssh ControlPath of the room's master connection
+    url_base: str = ""          # the room's path on the hub (/r/<id>)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Location":
@@ -159,9 +163,10 @@ class Location:
     def bridge(self) -> str:
         return f"{self.home}/.meetingroom/mcp_bridge.py"
 
-    def connect(self, hub_port: int, token: str) -> None:
-        """Open the master connection with a reverse tunnel to the hub and install the bridge."""
-        self.cp = os.path.join(tempfile.gettempdir(), f"mr-{os.getpid()}-%C")
+    def connect(self, hub_port: int, token: str, tag: str = "") -> None:
+        """Open the master connection with a reverse tunnel to the hub and install the bridge.
+        `tag` (the room id) keeps two rooms on the same host on separate master connections."""
+        self.cp = os.path.join(_SOCK_DIR, f"mr-{os.getpid()}{'-' + tag if tag else ''}-%C")
         err = ""
         for _ in range(6):
             port = random.randint(20000, 60000)
@@ -189,7 +194,7 @@ class Location:
 
     def ssh_argv(self, agent: str, hub_port: int, exe: str, args: list[str], drop_key: str) -> list[str]:
         """Local argv that runs `exe args` in the project folder on the remote, wired to the hub."""
-        env = (f"unset {drop_key}; export MR_URL=http://127.0.0.1:{self.rport} MR_HOST=127.0.0.1:{hub_port} "
+        env = (f"unset {drop_key}; export MR_URL=http://127.0.0.1:{self.rport}{self.url_base} MR_HOST=127.0.0.1:{hub_port} "
                f"MR_AGENT={shlex.quote(agent)} MR_UPLOAD=1 MCP_TOOL_TIMEOUT={24 * 3600 * 1000}; "
                "MR_TOKEN=$(cat ~/.meetingroom/token); export MR_TOKEN; ")
         script = f"cd -- {shlex.quote(self.path)} && {env}exec {shlex.join([exe, *args])}"

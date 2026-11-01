@@ -8,6 +8,7 @@ import os
 import platform
 import subprocess
 import tempfile
+from itertools import islice
 from pathlib import Path
 
 MAX_OUT = 20_000
@@ -46,10 +47,14 @@ TOOL_SPECS = [
     },
     {
         "name": "read_file",
-        "description": "Read a text file (relative paths are inside your workspace).",
+        "description": "Read a text file in pages (default 200 lines). Use offset and limit for specific sections. Relative paths are inside your workspace.",
         "schema": {
             "type": "object",
-            "properties": {"path": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "description": "Zero-based starting line (default 0).", "minimum": 0},
+                "limit": {"type": "integer", "description": "Maximum lines to read (default 200, maximum 2000).", "minimum": 1, "maximum": 2000},
+            },
             "required": ["path"],
         },
     },
@@ -188,7 +193,15 @@ async def execute(name: str, args: dict, workdir: Path, python: str, share_cb) -
                     pass
         if name == "read_file":
             p = resolve(workdir, args["path"])
-            return _clip(p.read_text(encoding="utf-8", errors="replace"))
+            offset, limit = int(args.get("offset", 0)), int(args.get("limit", 200))
+            if offset < 0 or not 1 <= limit <= 2000:
+                return "error: offset must be >= 0 and limit must be between 1 and 2000"
+            with p.open(encoding="utf-8", errors="replace") as f:
+                lines = list(islice(f, offset, offset + limit + 1))
+            text = _clip("".join(lines[:limit]))
+            if len(lines) > limit:
+                text += f"\n[more lines: read_file with offset={offset + limit}]"
+            return text
         if name == "write_file":
             p = resolve(workdir, args["path"])
             p.parent.mkdir(parents=True, exist_ok=True)

@@ -1,17 +1,12 @@
-"""Start-up participant picker: a tiny local page (multi-select drop-down) that
-asks which of the configured agents should join this meeting. It runs on the
-same port as the room and shuts down before the room starts."""
+"""The corridor: the hub's start page. Every open room is a wooden door (step in, or
+close it); the door at the end sets up a new room - who joins and where it works."""
 from __future__ import annotations
 
 import json
-import secrets
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 from .agents import agent_face
-from .location import Location, list_dirs, probe, ssh_hosts
+from .location import ssh_hosts
 
 STATIC = Path(__file__).parent / "static"
 
@@ -20,18 +15,52 @@ def _char_source() -> str:
     """The room's own buildChar() (same body), lifted from room3d.js so the picker never drifts from it."""
     src = (STATIC / "room3d.js").read_text()
     a, b = src.index("const B = {"), src.index("// ---------------------------------------------------------------- homography")
-    return src[a:b].replace('new URL("./faces/" + face.file, import.meta.url).href', '"/faces/" + face.file + Q')
-ASSETS = {"/vendor/three.min.js": "text/javascript", "/faces/faces.json": "application/json"}
+    return src[a:b].replace('new URL("./faces/" + face.file, import.meta.url).href', '"/static/faces/" + face.file')
 
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room - participants</title>
+PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room - corridor</title>
 <style>
  :root{--bg:#120d09;--panel:#1b1510;--panel2:#241c15;--line:#352a1f;--line2:#46382a;--text:#efe6d6;--muted:#a8977f;--dim:#76664f;--amber:#f0b44a;--accent:#9fe38f}
  *{box-sizing:border-box}
- body{margin:0;min-height:100vh;font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text);
-  background:radial-gradient(ellipse at 50% 28%,#3a2614 0,#1c130c 48%,#0e0907 100%);display:flex;flex-direction:column;align-items:center;padding:7vh 20px 40px}
- body:before{content:"";position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,#0000 0 3px,#00000018 3px 4px)}
+ body{margin:0;min-height:100vh;font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--text);background:#0e0907;overflow-x:hidden}
  h1{font:700 13px ui-monospace,Menlo,monospace;letter-spacing:.14em;text-transform:uppercase;margin:0 0 6px;color:var(--amber)}
  h2{font-size:26px;font-weight:600;margin:0 0 6px} p.sub{color:var(--muted);margin:0 0 30px}
+ /* ---- corridor */
+ /* ---- same chrome as the room page: mono header bar, hard pixels, black-bordered tags */
+ :root{--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--red:#e56b5b;--green:#7fd36f}
+ body{display:grid;grid-template-rows:44px minmax(0,1fr);height:100vh;overflow:hidden}
+ body.setup{display:block;height:auto;overflow:auto}
+ header.hbar{display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel);font-family:var(--mono)}
+ .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:13px}
+ .rec{width:9px;height:9px;background:var(--red);box-shadow:0 0 0 3px #e56b5b33}
+ .meta{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .spacer{flex:1}
+ .conn{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:11px}.conn i{width:8px;height:8px;background:var(--dim)}.conn.on i{background:var(--green)}
+ header.hbar button{font:600 11.5px var(--mono);color:var(--text);background:#2f5a2a;border:2px solid #000;padding:4px 10px;cursor:pointer;box-shadow:2px 2px 0 #000}
+ header.hbar button:hover{background:#3a6e33}
+ #game{position:relative;overflow:hidden;background:#1a120c}
+ #cv{display:block;image-rendering:pixelated}
+ #labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+ .lbl{position:absolute;left:0;top:0;display:flex;flex-direction:column;align-items:center;gap:5px;font-family:var(--mono);will-change:transform}
+ .lbl .tag{display:flex;align-items:center;gap:6px;background:#0e0a07cc;border:2px solid #000;padding:2px 7px;font-size:12px;color:#efe6d6;white-space:nowrap;max-width:220px}
+ .lbl .tag b{overflow:hidden;text-overflow:ellipsis}
+ .lbl .tag i{width:8px;height:8px;flex:none}
+ .lbl .tag span{color:var(--muted);font-size:11px}
+ .lbl .tag .x{display:none;background:#5a2620;color:#ffd0c8;border:1px solid #000;font:700 10px var(--mono);padding:0 5px;cursor:pointer;margin-left:2px}
+ .lbl.hot .tag{border-color:#f0b44a;background:#1b1510ee}.lbl.hot .tag .x{display:inline-block}
+ .lbl .cap{font-size:10.5px;color:var(--muted);background:#0e0a0799;padding:1px 6px;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+ .hint{position:absolute;left:12px;bottom:10px;font:11px var(--mono);color:var(--dim);background:#0e0a0799;padding:2px 7px;pointer-events:none}
+ #empty{position:absolute;left:50%;top:18px;transform:translateX(-50%);font:12px var(--mono);color:var(--muted);background:#0e0a07cc;border:2px solid #000;padding:4px 10px;pointer-events:none}
+ /* the setup screen in the room's style: square corners, black borders, hard shadows */
+ #setup .card,#setup .where,#setup .qty button,#setup .wbtn,#setup .seg,#setup .wrow input,#setup .browser,#setup .recent span,#setup .card .win,#setup .chair{border-radius:0}
+ #setup .card,#setup .where{border:2px solid #000;box-shadow:4px 4px 0 #000;background:var(--panel)}
+ #setup .card.on{border-color:var(--c);box-shadow:4px 4px 0 #000,0 0 22px -6px var(--c)}
+ #setup h1,#setup .where h3,#setup .card .name{font-family:var(--mono)}
+ #setup .go{background:#2f5a2a;color:var(--text);border:2px solid #000;border-radius:0;font:700 14px var(--mono);box-shadow:3px 3px 0 #000;text-transform:uppercase}
+ #setup .go:active{transform:translate(2px,2px);box-shadow:1px 1px 0 #000}
+ #setup .link{font-family:var(--mono);font-size:12px}
+ /* ---- setting up a new room */
+ #setup{display:none;min-height:100vh;flex-direction:column;align-items:center;padding:5vh 20px 40px;background:var(--bg)}
+ body.setup #game,body.setup header.hbar{display:none} body.setup #setup{display:flex}
  .grid{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;max-width:980px}
  .card{position:relative;width:200px;padding:12px 12px 14px;background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;
   cursor:pointer;user-select:none;transition:transform .15s,border-color .15s,opacity .2s,filter .2s;box-shadow:0 8px 22px #0008}
@@ -71,7 +100,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  .recent span{font:11.5px ui-monospace,Menlo,monospace;color:var(--muted);border:1px solid var(--line2);border-radius:5px;padding:2px 8px;cursor:pointer}
  .recent span:hover{color:var(--text);border-color:#6a5640}
 </style></head><body>
-<h1>&#9679; Meeting room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair, or use + chair to seat several of the same model.</p>
+<header class="hbar"><div class="brand"><span class="rec"></span>Meeting room</div><div class="meta" id="sub">corridor</div><div class="spacer"></div>
+ <button id="newbtn" title="Set up a new room">+ New room</button><div class="conn on" id="conn"><i></i><span>live on this computer</span></div></header>
+<div id="game"><canvas id="cv"></canvas><div id="labels"></div><div id="empty" style="display:none">No rooms yet. Step through the open door to set one up.</div>
+ <div class="hint">click a door to step in · ← → or scroll to walk the corridor</div></div>
+<div id="setup"><h1>&#9679; New room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair, or use + chair to seat several of the same model.</p>
 <div class="grid" id="grid"></div>
 <div class="where">
  <h3>Where does the meeting take place?</h3>
@@ -84,11 +117,13 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  <div class="recent" id="recent"></div>
  <div class="wst" id="wst"></div>
 </div>
-<div class="bar"><span class="link" id="all">Select all / none</span><button class="go" id="go">Start meeting</button></div>
+<div class="where"><h3>Name on the door</h3><div class="wrow" style="margin-top:0"><label>Name</label><input id="rname" placeholder="(optional, defaults to the folder name)" autocomplete="off" spellcheck="false" maxlength="60"></div></div>
+<div class="bar"><span class="link" id="all">Select all / none</span><span class="link" id="back">&larr; Back to the corridor</span><button class="go" id="go">Open room</button></div>
+</div>
 <script type="module">
 const AGENTS=__AGENTS__, T=__TOKEN__, KEY='mr-agents', Q='?t='+encodeURIComponent(T);
-const THREE=await import('/vendor/three.min.js'+Q);
-const FACES=await fetch('/faces/faces.json'+Q).then(r=>r.json()).catch(()=>[]);
+const THREE=await import('/static/vendor/three.min.js');
+const FACES=await fetch('/static/faces/faces.json').then(r=>r.json()).catch(()=>[]);
 const MAXC=4;
 const cnt={};AGENTS.forEach(a=>cnt[a.name]=0);
 {let saved=JSON.parse(localStorage.getItem(KEY)||'null');if(!Array.isArray(saved))saved=AGENTS.map(a=>a.name);
@@ -96,6 +131,7 @@ const cnt={};AGENTS.forEach(a=>cnt[a.name]=0);
  if(!Object.values(cnt).some(v=>v))AGENTS.forEach(a=>cnt[a.name]=1)}
 const total=()=>Object.values(cnt).reduce((x,y)=>x+y,0);
 const $=id=>document.getElementById(id), grid=$('grid'), busts=[];
+let built=false;
 const texLoader=new THREE.TextureLoader();
 __CHAR__
 function bust(a,canvas){
@@ -111,6 +147,7 @@ function bust(a,canvas){
   rig.head.rotation.x=Math.sin(t*1.1+ph)*.04+(on?0:.3);rig.upper.rotation.x=on?0:.08;rig.root.position.y=Math.sin(t*2+ph)*(on?.008:0);
   r.setSize(canvas.clientWidth,canvas.clientHeight,false);cam.aspect=canvas.clientWidth/canvas.clientHeight;cam.updateProjectionMatrix();r.render(sc,cam)});
 }
+function buildCards(){if(built)return;built=true;
 AGENTS.forEach(a=>{const c=document.createElement('div');c.className='card';c.style.setProperty('--c',a.color);
  c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>@'+a.name+'</div><div class="role">'+a.provider+(a.role?' - '+a.role:'')+'</div><div class="qty"><button data-d="-1" title="Remove a chair">&minus;</button><span></span><button data-d="1" title="Add another chair for this model">+ chair</button></div>';
  c.onclick=e=>{const b=e.target.closest('[data-d]');
@@ -118,23 +155,22 @@ AGENTS.forEach(a=>{const c=document.createElement('div');c.className='card';c.st
   else cnt[a.name]=cnt[a.name]?0:1;
   draw()};grid.append(c);a.el=c;
  try{bust(a,c.querySelector('canvas'))}catch(e){c.querySelector('.win').textContent=''}});
-function draw(){AGENTS.forEach(a=>{const n=cnt[a.name],on=n>0;a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?(n>1?n+' CHAIRS':'SEATED'):'EMPTY';a.el.querySelector('.qty span').textContent=n+(n===1?' chair':' chairs')});
- $('go').disabled=!total();$('go').textContent='Start meeting ('+total()+' seated)'}
+draw()}
+function draw(){if(!built)return;AGENTS.forEach(a=>{const n=cnt[a.name],on=n>0;a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?(n>1?n+' CHAIRS':'SEATED'):'EMPTY';a.el.querySelector('.qty span').textContent=n+(n===1?' chair':' chairs')});
+ $('go').disabled=!total();$('go').textContent='Open room ('+total()+' seated)'}
 $('all').onclick=()=>{const any=total()>0;AGENTS.forEach(a=>cnt[a.name]=any?0:1);draw()};
-(function loop(t){busts.forEach(b=>b(t/1000));requestAnimationFrame(loop)})(0);
+(function loop(t){if(document.body.classList.contains('setup'))busts.forEach(b=>b(t/1000));requestAnimationFrame(loop)})(0);
 $('go').onclick=async()=>{const names=AGENTS.flatMap(a=>Array(cnt[a.name]).fill(a.name)), w=where();
  if(w.kind!=='default'&&!w.path&&w.kind==='local'){status('Choose a project folder (or pick “Agents’ own folders”).','bad');return}
  if(w.kind==='ssh'&&!w.host){status('Enter an SSH host.','bad');return}
  localStorage.setItem(KEY,JSON.stringify(names));$('go').disabled=true;$('go').textContent=w.kind==='ssh'?'Connecting...':'Starting...';
- const res=await fetch('/select'+Q,{method:'POST',body:JSON.stringify({agents:names,location:w})});
+ const res=await fetch('/select'+Q,{method:'POST',body:JSON.stringify({agents:names,location:w,name:$('rname').value.trim()})});
  if(!res.ok){const j=await res.json().catch(()=>({}));status(j.error||'Could not start ('+res.status+')','bad');$('go').disabled=false;draw();return}
  const j=await res.json().catch(()=>({}));if(j.location)Object.assign(w,j.location);
  localStorage.setItem(WKEY,JSON.stringify(w));
  if(w.kind!=='default'){const rec=JSON.parse(localStorage.getItem(RKEY)||'[]').filter(r=>!(r.kind===w.kind&&r.path===w.path&&(r.host||'')===(w.host||'')));
   rec.unshift({kind:w.kind,path:w.path,host:w.host});localStorage.setItem(RKEY,JSON.stringify(rec.slice(0,8)))}
- for(;;){await new Promise(r=>setTimeout(r,400));
-  try{const r=await fetch('/'+Q,{cache:'no-store'});const x=await r.text();
-   if(r.ok&&!x.includes('Who joins this meeting')){location.replace('/'+Q);return}}catch(e){}}};
+ location.href=j.url};
 // ---- where: agents' folders | local project folder | remote over SSH
 const WKEY='mr-where', RKEY='mr-where-recent', HOSTS=__HOSTS__;
 let W=Object.assign({kind:'default',path:'',host:''},JSON.parse(localStorage.getItem(WKEY)||'{}'));
@@ -172,92 +208,35 @@ $('test').onclick=async()=>{const w=where();if(!w.host)return status('Enter a ho
  if(!r.ok)return status(r.error,'bad');$('path').value=r.path;
  const b=r.bins;status('✓ '+r.host+':'+r.path+'  ·  claude '+(b.claude?'✓':'✗ missing')+'  ·  codex '+(b.codex?'✓':'✗ missing'),'ok')};
 drawWhere();
-draw();
+
+// ---- the corridor: one wooden door per open room (3D, same style as the room), plus a door to a new one
+function openSetup(){buildCards();document.body.classList.add('setup');scrollTo(0,0);status('')}
+function closeSetup(){document.body.classList.remove('setup')}
+$('back').onclick=closeSetup;$('newbtn').onclick=openSetup;
+addEventListener('keydown',e=>{if(e.key==='Escape')closeSetup()});
+let ROOMS=[],hall=null;
+try{const {createCorridor}=await import('/static/corridor3d.js');
+ hall=createCorridor({wrap:$('game'),canvas:$('cv'),labels:$('labels'),
+  onPick:p=>p.kind==='new'?openSetup():location.href='/r/'+p.id+'/'+Q,
+  onClose:async r=>{if(!confirm('Close "'+r.title+'"? Its agents stop and the minutes are saved.'))return;
+   await fetch('/api/close/'+r.id+Q,{method:'POST',body:'{}'});refresh()}})}
+catch(e){$('empty').style.display='';$('empty').textContent='3D view unavailable ('+e.message+'). Use + New room.'}
+async function refresh(){
+ const c=$('conn');
+ try{const r=await fetch('/api/rooms'+Q,{cache:'no-store'});if(!r.ok)throw 0;ROOMS=(await r.json()).rooms;c.className='conn on';c.lastChild.textContent='live on this computer'}
+ catch(e){c.className='conn';c.lastChild.textContent='app not running';return}
+ hall&&hall.setRooms(ROOMS);
+ $('sub').textContent='corridor · '+(ROOMS.length?ROOMS.length+(ROOMS.length>1?' rooms open':' room open'):'no rooms open yet');
+ if(hall)$('empty').style.display=ROOMS.length?'none':'';
+}
+refresh();setInterval(()=>{if(!document.body.classList.contains('setup'))refresh()},2500);
+if(new URLSearchParams(location.search).get('new'))openSetup();
 </script></body></html>"""
 
 
-def pick_agents(agents: list[dict], port: int, token: str, open_url=None) -> tuple[list[str], Location]:
-    """Serve the picker on 127.0.0.1:port until a selection is posted; return the chosen names and location."""
-    done = threading.Event()
-    chosen: list[str] = []
-    picked: dict = {"loc": Location()}
-    hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+def lobby_page(agents: list[dict], token: str) -> str:
     info = [{"name": a["name"], "provider": a.get("provider", ""), "color": a.get("color", "#888"),
              "role": a.get("role", ""), "face": agent_face(a)} for a in agents]
-
-    class H(BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def _ok(self):
-            q = parse_qs(urlparse(self.path).query)
-            t = (q.get("t") or [""])[0]
-            return self.headers.get("Host") in hosts and secrets.compare_digest(t, token)
-
-        def do_GET(self):
-            if not self._ok():
-                self.send_response(403); self.end_headers(); return
-            path = urlparse(self.path).path
-            f = None
-            if path in ASSETS:
-                f, ct = STATIC / path.lstrip("/"), ASSETS[path]
-            elif path.startswith("/faces/face_") and path.endswith(".png") and "/" not in path[7:]:
-                f, ct = STATIC / path.lstrip("/"), "image/png"
-            if f is not None:
-                if not f.is_file():
-                    self.send_response(404); self.end_headers(); return
-                self.send_response(200); self.send_header("Content-Type", ct); self.end_headers()
-                self.wfile.write(f.read_bytes()); return
-            body = (PAGE.replace("__AGENTS__", json.dumps(info).replace("</", "<\\/"))
-                    .replace("__TOKEN__", json.dumps(token)).replace("__HOSTS__", json.dumps(ssh_hosts()).replace("</", "<\\/"))
-                    .replace("__CHAR__", _char_source())).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers(); self.wfile.write(body)
-
-        def do_POST(self):
-            if not self._ok() or self.headers.get("Origin") not in {f"http://{h}" for h in hosts}:
-                self.send_response(403); self.end_headers(); return
-            try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            except Exception:
-                body = None
-            path = urlparse(self.path).path
-            if path == "/ls" and isinstance(body, dict):
-                return self._json(200, list_dirs(str(body.get("path") or "~"), str(body.get("host") or "") or None))
-            if path == "/probe" and isinstance(body, dict):
-                return self._json(200, probe(str(body.get("host") or ""), str(body.get("path") or "~")))
-            if path != "/select":
-                self.send_response(404); self.end_headers(); return
-            if isinstance(body, list):          # older page: just the names
-                body = {"agents": body}
-            body = body if isinstance(body, dict) else {}
-            valid = {a["name"] for a in agents}
-            names = [n for n in body.get("agents") or [] if n in valid][:12]
-            if not names:
-                return self._json(400, {"error": "choose at least one participant"})
-            loc = Location.from_dict(body.get("location"))
-            if err := loc.validate():
-                return self._json(400, {"error": err})
-            chosen.extend(names)
-            picked["loc"] = loc
-            self._json(200, {"location": {"kind": loc.kind, "path": loc.path, "host": loc.host}})
-            done.set()
-
-        def _json(self, code: int, obj: dict):
-            data = json.dumps(obj).encode()
-            self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers()
-            self.wfile.write(data)
-
-    class S(ThreadingHTTPServer):
-        allow_reuse_address = True
-        daemon_threads = True
-
-    srv = S(("127.0.0.1", port), H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    if open_url:
-        open_url()
-    done.wait()
-    srv.shutdown(); srv.server_close()
-    return chosen, picked["loc"]
+    return (PAGE.replace("__AGENTS__", json.dumps(info).replace("</", "<\\/"))
+            .replace("__TOKEN__", json.dumps(token)).replace("__HOSTS__", json.dumps(ssh_hosts()).replace("</", "<\\/"))
+            .replace("__CHAR__", _char_source()))

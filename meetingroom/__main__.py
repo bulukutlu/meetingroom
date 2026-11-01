@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import os
 import re
@@ -94,54 +95,56 @@ def main():
         return
 
     cfg = DEMO_CFG if a.demo else load_cfg(a.config)
+    import uuid
     import uvicorn
     from .location import Location
-    from .server import create_app
+    from .server import create_hub
 
     token = secrets.token_urlsafe(24)  # new every start; never stored
     url = f"http://127.0.0.1:{a.port}/?t={token}"
-    opener = None if a.no_browser else (lambda: threading.Timer(1.0, lambda: webbrowser.open(url)).start())
     from .tts import preload_from_cfg
-    preload_from_cfg(cfg)   # warm Kokoro while the picker page is open
+    preload_from_cfg(cfg)   # warm Kokoro while you are in the corridor
     all_agents = cfg["agents"]
-    loc = Location.from_dict({"path": a.project or "", "host": a.ssh or ""})
-    if a.ssh and not a.project:
-        loc.path = "~"
-    if err := loc.validate():
-        sys.exit(err)
-    if a.agents:
-        want = [n.strip().lower() for n in a.agents.split(",") if n.strip()]
-        known = {x["name"].lower() for x in all_agents}
-        if bad := [n for n in want if n not in known and re.sub(r"[-_ ]?\d+$", "", n) not in known]:
-            sys.exit(f"unknown agent(s): {', '.join(bad)} (configured: {', '.join(sorted(known))})")
-        names = want      # repeats / "sonnet-2" make extra chairs of that model
-    elif a.all or len(all_agents) < 2:
-        names = [x["name"] for x in all_agents]
-    else:
-        from .picker import pick_agents
-        print(f"\n  Choose participants in the browser: {url}\n")
-        names, picked = pick_agents(all_agents, a.port, token, opener)
-        if not (a.project or a.ssh):
-            loc = picked
-        opener = None   # already open; the page redirects itself into the room
-    from .agents import expand_agents
-    cfg = {**cfg, "agents": expand_agents(all_agents, names), "location": loc}
-    if loc.remote:
-        print(f"  Connecting to {loc.host} ...")
-        try:
-            loc.connect(a.port, token)
-        except Exception as e:
-            sys.exit(str(e))
-    app = create_app(cfg, a.port, token)
-    print("\n  Meeting room running (only reachable from this computer)")
-    print(f"  Participants: {', '.join('@' + x['name'] for x in cfg['agents'])}")
-    if loc.label():
-        print(f"  Project: {loc.label()}" + ("  (Claude Code / Codex agents run there over SSH)" if loc.remote else ""))
-    print(f"  Open: {url}\n")
-    if opener:
-        opener()
-    uvicorn.run(app, host="127.0.0.1", port=a.port, log_level="warning")
-
+    initial = None
+    # --agents / --all / --project / --ssh (or a single configured agent) open a first room straight away;
+    # otherwise you start in the corridor and open rooms from there.
+    if a.agents or a.all or a.project or a.ssh or len(all_agents) < 2:
+        loc = Location.from_dict({"path": a.project or "", "host": a.ssh or ""})
+        if a.ssh and not a.project:
+            loc.path = "~"
+        if err := loc.validate():
+            sys.exit(err)
+        if a.agents:
+            want = [n.strip().lower() for n in a.agents.split(",") if n.strip()]
+            known = {x["name"].lower() for x in all_agents}
+            if bad := [n for n in want if n not in known and re.sub(r"[-_ ]?\d+$", "", n) not in known]:
+                sys.exit(f"unknown agent(s): {', '.join(bad)} (configured: {', '.join(sorted(known))})")
+            names = want      # repeats / "sonnet-2" make extra chairs of that model
+        else:
+            names = [x["name"] for x in all_agents]
+        initial = {"names": names, "location": loc, "rid": uuid.uuid4().hex[:6]}
+        url = f"http://127.0.0.1:{a.port}/r/{initial['rid']}/?t={token}"
+    app = create_hub(cfg, a.port, token, initial)
+    print("\n  Meeting rooms running (only reachable from this computer)")
+    print(f"  Corridor: http://127.0.0.1:{a.port}/?t={token}")
+    if initial:
+        print(f"  First room: {url}")
+    print()
+    if not a.no_browser:
+        threading.Timer(1.5 if initial else 1.0, lambda: webbrowser.open(url)).start()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=a.port, log_level="warning",
+                                           timeout_graceful_shutdown=8))
+    # Not server.run(): asyncio.run() waits for every to_thread() worker before it returns.
+    factory = server.config.get_loop_factory()
+    loop = factory() if factory else asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(server.serve())
+    except KeyboardInterrupt:
+        pass
+    # Rooms are closed and minutes written by now. Don't wait for leftover worker threads
+    # (a model download, a pending audio wait): they would keep the process alive.
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(0)
 
 if __name__ == "__main__":
     main()

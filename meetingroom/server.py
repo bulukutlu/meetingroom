@@ -77,14 +77,21 @@ def permission_summary(tool: str, inp: dict) -> str:
 
 
 class Room:
-    def __init__(self, cfg: dict, port: int = 0, token: str = ""):
+    def __init__(self, cfg: dict, port: int = 0, token: str = "", rid: str = "", title: str = ""):
         self.cfg = cfg
         self.port = port
         self.token = token
+        self.rid = rid or uuid.uuid4().hex[:6]
+        self.base = f"/r/{self.rid}"          # every room lives under its own path on the one hub
+        self.title = title
+        self.created = time.time()
+        self.tasks: list[asyncio.Task] = []
         self.user: str = cfg.get("user_name", "You")
         self.python: str = cfg.get("python") or "python3"
         self.workspace = Path(cfg["workspace"]).expanduser().resolve()
         self.session = time.strftime("%Y%m%d-%H%M%S")
+        if (self.workspace / "meetings" / self.session).exists():   # two rooms opened in the same second
+            self.session += f"-{self.rid}"
         self.session_dir = self.workspace / "meetings" / self.session
         self.shared_dir = self.session_dir / "shared"
         self.shared_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +106,7 @@ class Room:
         self.approvals: dict[str, dict] = {}
         self.agents: dict[str, Agent] = {}
         self.location: Location = cfg.get("location") or Location()
+        self.location.url_base = self.base
         self.quota: dict = {}   # plan usage windows reported by Claude Code (account-wide)
         assign_people(cfg["agents"])
         for spec in cfg["agents"]:
@@ -151,12 +159,47 @@ class Room:
     def snapshot(self) -> dict:
         return {
             "quota": self.quota,
-            "type": "snapshot", "user": self.user, "session": self.session,
+            "type": "snapshot", "user": self.user, "session": self.session, "room": self.rid, "title": self.title,
             "workspace": str(self.workspace), "location": self.location.public(), "stt": self.stt.public(), "tts": self.tts.public(),
             "agents": [a.public() for a in self.agents.values()],
             "messages": self.messages, "shared": self.shared,
             "approvals": [{k: v for k, v in ap.items() if k != "future"} for ap in self.approvals.values()],
         }
+
+    def lobby_info(self) -> dict:
+        """What the corridor shows on this room's door."""
+        return {"id": self.rid, "title": self.title, "label": self.location.label(), "kind": self.location.kind,
+                "created": self.created, "session": self.session, "messages": sum(m["kind"] == "msg" for m in self.messages),
+                "approvals": len(self.approvals),
+                "agents": [{k: a.public().get(k) for k in ("name", "person", "color", "status")} for a in self.agents.values()]}
+
+    def start(self):
+        self.tasks = [asyncio.create_task(a.run_forever()) for a in self.agents.values()]
+        self.tasks += [asyncio.create_task(self.load_stt()), asyncio.create_task(self.load_tts())]
+
+    async def shutdown(self, next_page: str | None = None):
+        """Stop the agents, write the minutes, say goodbye to open pages, drop the SSH session."""
+        self.msg_audio.close()
+        for a in self.agents.values():
+            a.stop()
+        for t in self.tasks:
+            t.cancel()
+        if self.tasks:
+            await asyncio.wait(self.tasks, timeout=5)
+        minutes = await asyncio.to_thread(_minutes_summary, self)
+        if next_page is not None:
+            await self.broadcast({"type": "bye", "minutes": minutes, "next": next_page})
+        for ws in list(self.clients):
+            try:
+                await ws.close(code=1000)
+            except Exception:
+                pass
+        try:
+            await asyncio.to_thread(self.location.close)
+        except Exception:
+            pass
+        cur = self.session_dir / "minutes.md"
+        print(f"  Room '{self.title}' closed. " + (f"Minutes: {cur}" if cur.exists() else "Empty meeting, no minutes written."), flush=True)
 
     # ---------------- messages & routing
     async def post(self, sender: str, text: str, kind: str = "msg", hop: int = 0, turn: str | None = None,
@@ -281,52 +324,16 @@ def _minutes_summary(room) -> dict:
     return {"current": str(room.session_dir / "minutes.md"), "sessions": out}
 
 
-def create_app(cfg: dict, port: int, token: str) -> FastAPI:
-    room_holder: dict = {}
-    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-    allowed_origins = {f"http://{h}" for h in allowed_hosts}
-
-    @asynccontextmanager
-    async def lifespan(app):
-        room = Room(cfg, port, token)
-        room_holder["room"] = room
-        tasks = [asyncio.create_task(a.run_forever()) for a in room.agents.values()]
-        tasks.append(asyncio.create_task(room.load_stt()))
-        tasks.append(asyncio.create_task(room.load_tts()))
-        yield
-        for t in tasks:
-            t.cancel()
-        try:
-            room.location.close()
-        except Exception:
-            pass
-        try:
-            mp = build_minutes(room.session_dir)
-            print(f"Meeting minutes: {mp}" if mp else "Empty meeting, no minutes written.")
-        except Exception as e:
-            print(f"could not write minutes: {e}")
-
-    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-
-    @app.middleware("http")
-    async def host_guard(request: Request, call_next):
-        # Blocks DNS-rebinding: only requests addressed to localhost are served.
-        if request.headers.get("host") not in allowed_hosts:
-            return JSONResponse({"error": "forbidden host"}, status_code=403)
-        resp = await call_next(request)
-        resp.headers["Cache-Control"] = "no-store"
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        return resp
-
-    def check_token(t: str | None):
-        if not t or not secrets.compare_digest(t, token):
-            raise HTTPException(403, "bad token")
+def room_app(room: Room, hub) -> FastAPI:
+    """The endpoints of one room; the hub mounts it at room.base (/r/<id>)."""
+    room_holder = {"room": room}
+    token, allowed_hosts, allowed_origins = hub.token, hub.allowed_hosts, hub.allowed_origins
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    check_token = hub.check_token
 
     @app.get("/")
     async def index():
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
-
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/files/{fid}")
     async def files(fid: str, t: str | None = None, mark: int = 0):
@@ -530,11 +537,9 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
                     for a in room.agents.values():
                         a.stop()
                 elif typ == "quit":
-                    for a in room.agents.values():
-                        a.stop()
-                    await room.broadcast({"type": "bye", "minutes": _minutes_summary(room)})
-                    loop = asyncio.get_running_loop()
-                    loop.call_later(0.8, os.kill, os.getpid(), signal.SIGINT)   # graceful uvicorn shutdown -> minutes, ssh cleanup
+                    asyncio.create_task(hub.quit())   # every room: minutes, goodbye page; then the process ends
+                elif typ == "close_room":
+                    asyncio.create_task(hub.close_room(room.rid, next_page="lobby"))
                 elif typ == "prefs":
                     room.narrate = bool(ev.get("narrate"))
                 elif typ == "set_approval":
@@ -552,5 +557,169 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
             pass
         finally:
             room.clients.discard(websocket)
+
+    return app
+
+
+class Hub:
+    """One local server, many rooms. The corridor (lobby) at / lists them as doors and
+    sets up new ones; each room runs independently under /r/<id>/ until it is closed."""
+
+    def __init__(self, cfg: dict, port: int, token: str):
+        self.cfg, self.port, self.token = cfg, port, token
+        self.rooms: dict[str, Room] = {}
+        self.mounts: dict[str, object] = {}
+        self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        self.allowed_origins = {f"http://{h}" for h in self.allowed_hosts}
+        self.app: FastAPI | None = None
+        self._quitting = False
+
+    def check_token(self, t: str | None):
+        if not t or not secrets.compare_digest(t, self.token):
+            raise HTTPException(403, "bad token")
+
+    def room_url(self, rid: str) -> str:
+        return f"/r/{rid}/?t={self.token}"
+
+    async def open_room(self, names: list[str], loc: Location, title: str = "", rid: str = "") -> Room:
+        """Seat the chosen agents in a new room at `loc` (connecting over SSH first if needed)."""
+        from .agents import expand_agents
+        rid = rid or uuid.uuid4().hex[:6]
+        if loc.remote:
+            print(f"  Connecting to {loc.host} ...", flush=True)
+            await asyncio.to_thread(loc.connect, self.port, self.token, rid)
+        n = len(self.rooms) + 1
+        title = (title or "").strip()[:60] or (Path(loc.path).name if loc.path else "") or f"Room {n}"
+        cfg = {**self.cfg, "agents": expand_agents(self.cfg["agents"], names), "location": loc}
+        try:
+            room = Room(cfg, self.port, self.token, rid=rid, title=title)
+        except Exception:
+            loc.close()
+            raise
+        self.rooms[rid] = room
+        from starlette.routing import Mount
+        m = Mount(room.base, app=room_app(room, self))
+        self.app.router.routes.insert(0, m)   # ahead of the hub's /r/{rid}/ fallback
+        self.mounts[rid] = m
+        room.start()
+        print(f"\n  Room '{title}' open: {', '.join('@' + x['name'] for x in cfg['agents'])}"
+              + (f"  ·  {loc.label()}" if loc.label() else "") + ("  (over SSH)" if loc.remote else ""), flush=True)
+        return room
+
+    async def close_room(self, rid: str, next_page: str | None = None):
+        room = self.rooms.pop(rid, None)
+        if not room:
+            return
+        m = self.mounts.pop(rid, None)
+        try:
+            await room.shutdown(next_page)
+        finally:
+            if m in self.app.router.routes:
+                self.app.router.routes.remove(m)
+
+    async def quit(self):
+        if self._quitting:
+            return
+        self._quitting = True
+        await asyncio.gather(*(self.close_room(rid, next_page="end") for rid in list(self.rooms)), return_exceptions=True)
+        asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGINT)   # graceful uvicorn shutdown
+
+
+def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) -> FastAPI:
+    """The app uvicorn serves. `initial` = {"names", "location", "rid"} opens a room right away
+    (command-line --agents/--all); otherwise you start in the corridor."""
+    from . import picker
+    hub = Hub(cfg, port, token)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if initial:
+            try:
+                await hub.open_room(initial["names"], initial["location"], rid=initial.get("rid", ""))
+            except Exception as e:   # e.g. the SSH tunnel failed: keep the app up, the corridor still works
+                print(f"  could not open the first room: {e}", flush=True)
+        yield
+        await asyncio.gather(*(hub.close_room(rid) for rid in list(hub.rooms)), return_exceptions=True)
+
+    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    hub.app = app
+    app.state.hub = hub
+
+    @app.middleware("http")
+    async def host_guard(request: Request, call_next):
+        # Blocks DNS-rebinding: only requests addressed to localhost are served.
+        if request.headers.get("host") not in hub.allowed_hosts:
+            return JSONResponse({"error": "forbidden host"}, status_code=403)
+        resp = await call_next(request)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        return resp
+
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.get("/")
+    async def lobby(t: str | None = None):
+        hub.check_token(t)
+        return HTMLResponse(picker.lobby_page(cfg["agents"], token))
+
+    async def lobby_body(request: Request, t: str | None):
+        hub.check_token(t)
+        if request.headers.get("origin") not in hub.allowed_origins:
+            raise HTTPException(403, "bad origin")
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        return body if isinstance(body, dict) else {}
+
+    @app.get("/r/{rid}/{rest:path}")
+    async def gone(rid: str, rest: str = ""):
+        # A room that was closed (or never opened): send the page back to the corridor.
+        return HTMLResponse("<!doctype html><title>Room closed</title><body style='background:#0e0907;color:#efe6d6;"
+                            "font:15px system-ui;text-align:center;padding-top:30vh'>This room is closed. Back to the corridor…"
+                            "<script>const t=new URLSearchParams(location.search).get('t')||sessionStorage.getItem('mr_t')||'';"
+                            "setTimeout(()=>location.replace('/?t='+encodeURIComponent(t)),900)</script>", status_code=404)
+
+    @app.get("/api/rooms")
+    async def rooms(t: str | None = None):
+        hub.check_token(t)
+        return {"rooms": [r.lobby_info() for r in hub.rooms.values()]}
+
+    @app.post("/ls")
+    async def ls(request: Request, t: str | None = None):
+        from .location import list_dirs
+        b = await lobby_body(request, t)
+        return await asyncio.to_thread(list_dirs, str(b.get("path") or "~"), str(b.get("host") or "") or None)
+
+    @app.post("/probe")
+    async def probe_(request: Request, t: str | None = None):
+        from .location import probe
+        b = await lobby_body(request, t)
+        return await asyncio.to_thread(probe, str(b.get("host") or ""), str(b.get("path") or "~"))
+
+    @app.post("/select")
+    async def select(request: Request, t: str | None = None):
+        b = await lobby_body(request, t)
+        valid = {a["name"] for a in cfg["agents"]}
+        names = [n for n in b.get("agents") or [] if n in valid][:12]
+        if not names:
+            return JSONResponse({"error": "choose at least one participant"}, status_code=400)
+        loc = Location.from_dict(b.get("location"))
+        if err := await asyncio.to_thread(loc.validate):
+            return JSONResponse({"error": err}, status_code=400)
+        try:
+            room = await hub.open_room(names, loc, title=str(b.get("name") or ""))
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"location": {"kind": loc.kind, "path": loc.path, "host": loc.host}, "room": room.rid,
+                "url": hub.room_url(room.rid)}
+
+    @app.post("/api/close/{rid}")
+    async def close(rid: str, request: Request, t: str | None = None):
+        await lobby_body(request, t)
+        if rid not in hub.rooms:
+            raise HTTPException(404)
+        await hub.close_room(rid, next_page="lobby")
+        return {"ok": True}
 
     return app

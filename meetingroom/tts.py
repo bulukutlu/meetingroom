@@ -46,7 +46,7 @@ class Speaker:
         self.model = None
         self.status = "off" if self.wanted == "browser" else "loading"
         self.detail = ""
-        self._lock = threading.Lock()
+        self._lock = _SYNTH_LOCK   # the Kokoro model is shared by every room
         self.acks: dict[str, list[bytes]] = {}   # agent -> short "on it" clips, made once at startup
         self.perms: dict[str, list[bytes]] = {}  # agent -> "I need your permission" clips
 
@@ -65,8 +65,14 @@ class Speaker:
             self.status = "ready"   # synth_wav needs this; clips are published only once all are made
             acks, perms = {}, {}
             for agent in self.voices:          # acknowledgement clips for instant playback
-                acks[agent] = [self.synth_wav(p, agent) for p in ACK_PHRASES]
-                perms[agent] = [self.synth_wav(p, agent) for p in PERMISSION_PHRASES]
+                key = (id(self.model), self.voices[agent], self.speed, self.lang)
+                with _CLIP_LOCK:
+                    clips = _CLIPS.get(key)
+                    if clips is None:
+                        clips = ([self.synth_wav(p, agent) for p in ACK_PHRASES],
+                                 [self.synth_wav(p, agent) for p in PERMISSION_PHRASES])
+                        _CLIPS[key] = clips
+                acks[agent], perms[agent] = clips
             self.acks, self.perms = acks, perms
             print(f"  narration: Kokoro ready ({time.time() - t:.1f}s wait + clips)", flush=True)
         except Exception as e:
@@ -87,7 +93,10 @@ class Speaker:
 
 
 _PRELOADS: dict[Path, Future] = {}
+_SYNTH_LOCK = threading.Lock()
 _PRELOAD_LOCK = threading.Lock()
+_CLIP_LOCK = threading.Lock()
+_CLIPS: dict = {}   # shared startup clips: model, voice, speed, language
 
 
 def _download(d: Path, name: str) -> Path:
@@ -170,10 +179,25 @@ class MessageAudio:
         self._order: deque[str] = deque()
         self._q: deque = deque()
         self._cv = threading.Condition()
-        threading.Thread(target=self._worker, daemon=True).start()
+        self._closed = False
+        self._thread: threading.Thread | None = None
+
+    def close(self):
+        """Release queued audio and wake waiters when a room is closed."""
+        with self._cv:
+            self._closed = True
+            self._q.clear()
+            for item in self.items.values():
+                for done in item["done"]:
+                    done.set()
+            self.items.clear()
+            self._order.clear()
+            self._cv.notify_all()
 
     def start(self, mid: str, text: str, agent: str) -> list[str]:
         with self._cv:
+            if self._closed:
+                return []
             if mid in self.items:
                 return self.items[mid]["parts"]
             parts = split_sentences(clean_for_speech(text[:4000]))
@@ -183,6 +207,9 @@ class MessageAudio:
             while len(self._order) > self.keep:
                 self.items.pop(self._order.popleft(), None)
             self._q.extend((mid, i) for i in range(len(parts)))
+            if self._thread is None and self._q:
+                self._thread = threading.Thread(target=self._worker, daemon=True)
+                self._thread.start()
             self._cv.notify()
             return parts
 
@@ -196,8 +223,10 @@ class MessageAudio:
     def _worker(self):
         while True:
             with self._cv:
-                while not self._q:
+                while not self._q and not self._closed:
                     self._cv.wait()
+                if self._closed:
+                    return
                 mid, i = self._q.popleft()
                 item = self.items.get(mid)
             if not item:
