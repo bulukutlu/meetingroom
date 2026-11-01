@@ -15,7 +15,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from . import tools
+from . import annotate, tools
 from .keys import get_key
 from .minutes import build as build_minutes
 
@@ -146,6 +146,7 @@ MEETING_RULES = """MEETING RULES (they override your usual style):
 - Never: greetings, pleasantries, thanks, restating the question, announcing routine actions, step-by-step narration of routine actions, offering further help, "standing by", "ready when you are", summarising what others said, replying to acknowledgements.
 - Exception, big tasks: before starting a long project (many steps, minutes of work), give ONE short heads-up sentence saying what you will do (e.g. "I'll refactor the parser and rerun all fits."). Do not wait for a reply; start working right away. Never do this for routine or quick tasks.
 - Do not answer for others or comment on messages addressed to someone else.
+- Lines starting "↳ points at" are marks the host drew on the shared screen: they say exactly which part of what was shown (text quoted verbatim, page/lines, or a small region image) the message is about. Act on that part; open a region image only when the quoted text isn't enough.
 - Hand work to another participant only when needed, by STARTING your reply with their @handle (shown in the roster) and the concrete task (e.g. "@sonnet plot thr_map.csv as a heatmap."). The room also accepts their first name as @Name. People may call you by your first name too. Mentioning a name anywhere else does nothing; refer to others without @ otherwise.
 """
 TURN_REMINDER = ("REMINDER: be as brief as possible. Task: show the result on screen, then \"Here it is.\" (only if you showed something on screen; otherwise just answer directly) plus at most ONE short "
@@ -293,6 +294,8 @@ How the meeting works:
                 continue
             t = time.strftime("%H:%M", time.localtime(m["ts"]))
             lines.append(f"[{t}] {m['from']}: {m['text']}")
+            for an in m.get("anchors") or []:   # marks on the shared screen: text verbatim, visuals as a small crop
+                lines.append(annotate.describe(an))
         if lines:
             self.pending_context += "\n".join(lines) + "\n"
         return self.pending_context

@@ -107,6 +107,29 @@ function buildRoom(scene) {
   for (let i = 0; i < 6; i++) { const l = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.32, 4), mat(i % 2 ? 0x2f6a2a : 0x3f7f34));
     l.position.set(0.25 + Math.cos(i) * 0.07, 2.0, Math.sin(i) * 0.07); l.rotation.set(Math.sin(i) * 0.7, 0, Math.cos(i) * 0.7); shelf.add(l); }
 
+  // wooden jukebox on top of the bookshelf: click to toggle lobby music
+  const jb = new THREE.Group(); jb.position.set(-0.25, 1.72, 0); shelf.add(jb);
+  const jbWood = mat(0x8a5428); jbWood.emissive = new THREE.Color(0x000000);
+  box(0.36, 0.05, 0.22, 0x5a3218, 0, 0.025, 0, jb);                                       // plinth
+  box(0.32, 0.2, 0.2, jbWood, 0, 0.15, 0, jb);                                            // body
+  const domeG = new THREE.CylinderGeometry(0.16, 0.16, 0.2, 12, 1, false, Math.PI / 2, Math.PI); domeG.rotateX(Math.PI / 2);
+  const dome = new THREE.Mesh(domeG, jbWood); dome.position.set(0, 0.25, 0); jb.add(dome);
+  const jbGlowMat = new THREE.MeshBasicMaterial({ color: 0xffc866 });
+  const jbFace = canvasTex(32, 32, (g, w, h) => {
+    g.fillStyle = "#3a1c0c"; g.fillRect(0, 0, w, h);
+    const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#ffd37a"); gr.addColorStop(1, "#ff8a3a");
+    g.fillStyle = gr; g.fillRect(4, 3, 24, 13);
+    g.fillStyle = "#3a1c0c"; g.font = "bold 8px monospace"; g.textAlign = "center"; g.fillText("♪ ♫ ♪", 16, 13);
+    g.fillStyle = "#c9a45a"; for (let i = 0; i < 4; i++) g.fillRect(5, 20 + i * 3, 22, 1);
+  });
+  const jbFaceMat = new THREE.MeshBasicMaterial({ map: jbFace });
+  box(0.26, 0.26, 0.01, jbFaceMat, 0, 0.17, 0.103, jb);                                   // lit front panel
+  box(0.04, 0.04, 0.02, 0xd9b45a, -0.1, 0.05, 0.1, jb); box(0.04, 0.04, 0.02, 0xd9b45a, 0.1, 0.05, 0.1, jb); // knobs
+  const jbLight = new THREE.PointLight(0xffb450, 0, 1.2, 1.6); jbLight.position.set(0, 0.2, 0.25); jb.add(jbLight);
+  const jbMeshes = [];
+  jb.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "jukebox" }; jbMeshes.push(o); } });
+  scene.userData.jukebox = { group: jb, meshes: jbMeshes, wood: jbWood, face: jbFaceMat, light: jbLight };
+
   // framed pictures
   const painting = (a, b) => canvasTex(24, 16, (g, w, h) => { g.fillStyle = a; g.fillRect(0, 0, w, h); g.fillStyle = b; g.fillRect(0, h * 0.62, w, h); g.fillStyle = "#2a3a20";
     for (let i = 0; i < 4; i++) { g.beginPath(); g.moveTo(i * 6 + 2, h * 0.65); g.lineTo(i * 6 + 5, h * 0.3); g.lineTo(i * 6 + 8, h * 0.65); g.fill(); } g.fillStyle = "#3a5a7a"; g.fillRect(2, h * 0.8, w - 6, 2); });
@@ -383,6 +406,41 @@ function quadTransform(w, h, dst) {
 }
 
 // ---------------------------------------------------------------- public API
+// ---------------- jukebox: tiny WebAudio lobby-music synth (no assets)
+function createJukebox() {
+  let ctx = null, master = null, timer = null, nextT = 0, step = 0, playing = false;
+  const BPM = 84, B = 60 / BPM;
+  const f = m => 440 * Math.pow(2, (m - 69) / 12);
+  // Cmaj7 - Am7 - Dm7 - G7, one bar each (4 beats)
+  const CH = [[48, 55, 59, 64], [45, 52, 59, 64], [50, 57, 60, 65], [43, 53, 59, 62]];
+  const PENT = [72, 74, 76, 79, 81, 84];
+  function tone(m, t, dur, vol, type) {
+    const o = ctx.createOscillator(), g = ctx.createGain(), lp = ctx.createBiquadFilter();
+    o.type = type; o.frequency.value = f(m); lp.type = "lowpass"; lp.frequency.value = 1800;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+    o.connect(lp); lp.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function schedule() {
+    while (nextT < ctx.currentTime + 0.4) {
+      const bar = Math.floor(step / 8) % CH.length, e = step % 8, ch = CH[bar];
+      if (e % 2 === 0) tone(ch[(e / 2) % 4] - (e === 0 ? 12 : 0), nextT, B * 1.6, 0.11, "triangle");     // arpeggiated electric-piano comp
+      if (e === 0) ch.slice(1).forEach(m => tone(m, nextT, B * 3.6, 0.04, "sine"));                       // soft pad
+      if (Math.random() < 0.38) tone(PENT[Math.floor(Math.random() * PENT.length)], nextT, B * 0.9, 0.07, "sine"); // tinkly lead
+      nextT += B / 2; step++;
+    }
+  }
+  return {
+    get playing() { return playing; },
+    toggle() {
+      if (!ctx) { ctx = new (window.AudioContext || window.webkitAudioContext)(); master = ctx.createGain(); master.gain.value = 0.5; master.connect(ctx.destination); }
+      if (playing) { playing = false; clearInterval(timer); master.gain.setTargetAtTime(0, ctx.currentTime, 0.15); return; }
+      ctx.resume(); master.gain.cancelScheduledValues(ctx.currentTime); master.gain.setTargetAtTime(0.5, ctx.currentTime, 0.05);
+      playing = true; nextT = ctx.currentTime + 0.05; step = 0; schedule(); timer = setInterval(schedule, 100);
+    },
+  };
+}
+
+
 export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, overlayH = 600, onPick = () => {}, onFocusChange = () => {} }) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: true });
   renderer.setPixelRatio(1);
@@ -593,6 +651,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   const monMeshes = []; mon.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "monitor" }; monMeshes.push(o); } });
   const monMats = monMeshes.map(o => o.material).filter(m => m.emissive);
   const doorMeshes = scene.userData.doorMeshes || [], doorMat = scene.userData.doorMat;
+  const jbx = scene.userData.jukebox, jukebox = createJukebox();
   let pointer = null, hovered = null, tagHover = null;
   canvas.addEventListener("pointermove", e => { pointer = { x: e.clientX, y: e.clientY }; });
   canvas.addEventListener("pointerleave", () => { pointer = null; });
@@ -601,7 +660,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const r = canvas.getBoundingClientRect();
     ndc.set((p.x - r.left) / r.width * 2 - 1, -((p.y - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const targets = [...monMeshes, ...doorMeshes]; for (const c of chars.values()) targets.push(c.rig.hit);
+    const targets = [...monMeshes, ...doorMeshes, ...jbx.meshes]; for (const c of chars.values()) targets.push(c.rig.hit);
     const h = ray.intersectObjects(targets, false)[0];
     return h ? h.object.userData.pick : null;
   }
@@ -617,12 +676,14 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const monOn = !!p && p.kind === "monitor";
     for (const m of monMats) m.emissive.setHex(monOn ? 0x1e1a12 : 0x000000);
     if (doorMat) doorMat.emissive.setHex(p && p.kind === "door" ? 0x3a2a10 : 0x000000);
+    jbx.wood.emissive.setHex(p && p.kind === "jukebox" ? 0x2a1a0a : 0x000000);
     canvas.style.cursor = p ? "pointer" : focus ? "zoom-out" : "";
   }
   canvas.addEventListener("click", e => {
     if (focus) { setFocus(false); return; }                 // click beside the zoomed monitor: back to the room
     const p = pickAt({ x: e.clientX, y: e.clientY });
     if (p && p.kind === "monitor") { setFocus(true); return; }
+    if (p && p.kind === "jukebox") { jukebox.toggle(); return; }
     onPick(p ? { ...p, x: e.clientX, y: e.clientY } : null);
   });
   function setFocus(v) {
@@ -646,6 +707,9 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     camera.lookAt(camLook);
     camera.updateMatrixWorld();
     for (const c of chars.values()) updateChar(c, dt, t);
+    { const on = jukebox.playing, k = on ? 0.5 + 0.5 * Math.sin(t * 5.2) : 0;
+      jbx.light.intensity = on ? 1.2 + 0.8 * k : 0; jbx.group.position.y = 1.72 + (on ? 0.004 * k : 0);
+      jbx.group.rotation.z = on ? Math.sin(t * 5.2) * 0.012 : 0; }
     setHover(tagHover && !focus ? { kind: "agent", name: tagHover } : pickAt(pointer));
     if (!screenActive) drawTerm(now);
     renderer.render(scene, camera);

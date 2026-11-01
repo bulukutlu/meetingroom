@@ -27,8 +27,11 @@ a{color:var(--accent)}
 header{display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel);font-family:var(--mono)}
 .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:13px}
 .rec{width:9px;height:9px;background:var(--red);box-shadow:0 0 0 3px #e56b5b33}
-.meta{color:var(--dim);font-size:12px}
-header .spacer{flex:1}
+.meta{color:var(--dim);font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header .spacer{flex:1 1 0;min-width:0}
+header{gap:10px;overflow:hidden}
+header>*{flex-shrink:0;white-space:nowrap}
+header>.meta{flex-shrink:1}
 .conn{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
 .conn i{width:8px;height:8px;background:var(--dim)}
 .conn.on i{background:var(--green)}
@@ -193,6 +196,36 @@ textarea:focus{border-color:#5d4a35}
 .doc th,.doc td{border:1px solid #cbbf9f;padding:6px 12px;text-align:left}.doc th{background:#e7dfcb}
 .doc blockquote{margin:0 0 10px;padding-left:12px;border-left:4px solid #cbbf9f;color:#5a4d3a}
 #modal .mc .doc{position:absolute;inset:0}
+/* marking: point at part of what's on screen; the mark rides along with your next message */
+#modal.marking{padding:10px 10px 0}
+#modal .mh .on{background:#5a4214;border-color:var(--amber);color:#ffe2a8}
+#modal .mh .mhint{color:var(--dim);font-size:11.5px}
+.stage{position:absolute;inset:0;overflow:auto;padding:14px;display:flex;flex-direction:column;align-items:center;gap:14px}
+.stage.fit{justify-content:center}
+.surf{position:relative;flex:none}
+.surf.img img{display:block;max-width:calc(var(--sw) - 28px);max-height:calc(var(--sh) - 28px)}
+/* undo the full-screen viewer's absolute img rule (#modal .mc img), which collapsed marked pages to zero height */
+#modal .mc .surf img{position:static;inset:auto;width:auto;height:auto;object-fit:fill}
+.surf.pg{width:min(100%,1100px)}#modal .mc .surf.pg img{display:block;width:100%;background:#fff}
+.surf.txt{width:100%;align-self:stretch}
+#modal .mc .surf pre,#modal .mc .surf .doc{position:static;inset:auto;height:auto;overflow:visible}
+#modal .mc .surf pre{background:#0b0d11}
+.surf.web{width:100%;height:100%;align-self:stretch}
+#modal .mc .surf.web iframe{position:static;width:100%;height:100%}
+.blayer{position:absolute;inset:0;z-index:2;cursor:crosshair;display:none}
+.boxmode .blayer{display:block}
+.markbox{position:absolute;z-index:3;border:2px solid var(--amber);background:#f0b44a26;pointer-events:none;min-width:6px;min-height:6px}
+.markbox b{position:absolute;left:-2px;top:-19px;background:var(--amber);color:#1d1406;font:700 11px/1 var(--mono);padding:3px 5px;white-space:nowrap}
+.markbox.sent{border-color:#7fd36f;background:#7fd36f14}.markbox.sent b{background:#7fd36f}
+.markbox.flash{animation:mflash 1.6s ease-out 2}
+@keyframes mflash{0%{box-shadow:0 0 0 0 #f0b44acc}100%{box-shadow:0 0 0 14px #f0b44a00}}
+.rubber{position:absolute;z-index:4;border:2px dashed #fff;background:#ffffff18;pointer-events:none}
+.marks{display:none;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.mchip{display:inline-flex;align-items:center;gap:6px;max-width:420px;background:#2a2012;border:1px solid #6b5222;padding:2px 4px 2px 8px;font:12px var(--mono);color:#ffe2a8;cursor:pointer}
+.mchip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mchip button{padding:0 5px;border:0;background:none;color:var(--muted);font-size:12px}
+.anc{display:block;margin-top:4px;border-left:3px solid var(--amber);padding:2px 8px;background:#0e0a07;font:12px var(--mono);color:var(--muted);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.anc:hover{color:var(--text)}
 </style>
 <script type="importmap">{"imports":{"three":"/static/vendor/three.min.js"}}</script>
 </head>
@@ -222,6 +255,7 @@ textarea:focus{border-color:#5d4a35}
   <div class="screenbar" id="screenbar">
     <span class="t" id="sbTitle"></span><span class="by" id="sbBy"></span>
     <button id="sbFocus" title="Toggle between close-up of the monitor and the whole room">Room view</button>
+    <button id="sbMark" title="Point at part of this: select text or drag a box, then say or type what you want. The mark goes with your next message (key: M)">✎ Mark</button>
     <button id="sbFull" title="Open full size">Full size</button>
     <button id="sbClose" title="Clear the screen">✕</button>
   </div>
@@ -252,13 +286,14 @@ textarea:focus{border-color:#5d4a35}
   <div class="inp">
     <div class="suggest" id="suggest"></div>
     <div class="replyhint" id="replyHint"></div>
+    <div class="marks" id="marks"></div>
     <textarea id="box" rows="1" placeholder="Talk to the room. Name an agent (anywhere) to give it a task, or say everyone."></textarea>
     <div class="hint"><kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> new line · hold <kbd>Space</kbd> to talk · name an agent anywhere to address it · an agent's question is answered by your next message</div>
   </div>
   <button class="send" id="send">SEND</button>
 </footer>
 
-<div id="modal"><div class="box"><div class="mh"><b id="mTitle"></b><span class="spacer"></span><a id="mOpen" target="_blank" rel="noopener noreferrer">Open in new tab ↗</a><button id="mClose">Close</button></div><div class="mc" id="mContent"></div></div></div>
+<div id="modal"><div class="box"><div class="mh"><b id="mTitle"></b><button id="mMark" title="Mark part of this for your next message (M)">✎ Mark</button><button id="mTool" style="display:none" title="Switch between selecting text and drawing a box">Tool: text</button><span class="mhint" id="mHint"></span><span class="spacer"></span><a id="mOpen" target="_blank" rel="noopener noreferrer">Open in new tab ↗</a><button id="mClose">Close</button></div><div class="mc" id="mContent"></div></div></div>
 
 <script type="module">
 import { createRoom } from "/static/room3d.js";
@@ -460,6 +495,7 @@ function handle(ev) {
     case "message": {
       const m = ev.message;
       S.messages.push(m); appendMsg(m); updateReplyHint();
+      if (m.anchors && MK.item) drawMarks();
       const fromAgent = S.agents.some(a => a.name === m.from);
       if (fromAgent && m.kind === "msg") {
         if ($("tts").checked) speak(m);
@@ -612,7 +648,7 @@ function msgHtml(m) {
   const to = m.to && m.to.length ? ` → ${m.to.map(personOf).map(esc).join(", ")}` : "";
   return `<div class="msg ${esc(m.kind)}"><div class="mav" style="background:${esc(c)}">${esc((personOf(m.from)[0] || "?").toUpperCase())}</div>
     <div class="body"><div class="line1"><b>${esc(personOf(m.from))}</b>${S.agents.some(a => a.name === m.from) ? `<em style="font-weight:400;font-style:normal;opacity:.5;margin-left:5px">@${esc(m.from)}</em>` : ""}<span>${hhmm(m.ts)}${to}</span></div>
-    <div class="txt">${md(m.text)}</div></div></div>`;
+    <div class="txt">${md(m.text)}</div>${(m.anchors || []).map(a => `<div class="anc" data-anc="${esc(a.id)}" data-item="${esc(a.item)}" title="Show this mark">📌 ${esc(anchorLabel(a))}</div>`).join("")}</div></div>`;
 }
 function renderLog() { $("log").innerHTML = S.messages.map(msgHtml).join(""); $("log").scrollTop = 1e9; count(); }
 function appendMsg(m) {
@@ -663,20 +699,216 @@ async function show(id, focus) {
 function syncFocusBtn() { $("sbFocus").textContent = room && room.focused ? "Room view" : "Zoom to screen"; }
 $("sbFocus").onclick = () => { if (room) { room.setFocus(!room.focused); syncFocusBtn(); } };
 $("sbClose").onclick = () => { S.current = null; renderShared(); $("screenContent").innerHTML = ""; $("screenbar").style.display = "none"; if (room) { room.setScreen(false); room.setFocus(false); } };
-$("sbFull").onclick = async () => {
-  const s = S.shared.find(x => x.id === S.current); if (!s) return;
-  $("mTitle").textContent = s.title; $("mOpen").href = fileUrl(s.id);
-  $("mContent").innerHTML = await contentFor(s, true); $("modal").style.display = "block";
+$("sbFull").onclick = () => { if (S.current) openViewer(S.current, false); };
+$("sbMark").onclick = () => { if (S.current) openMark(S.current); };
+$("mClose").onclick = () => { $("modal").style.display = "none"; $("mContent").innerHTML = ""; setMarking(false); MK.item = null; };
+
+// ---------------- marks: point at part of the shared screen
+// Text stays text (selection, line numbers, PDF text under a box): cheap for the
+// agents. Only a box over a picture becomes a small crop on the server.
+const MK = { item: null, on: false, tool: "box", pending: [], drag: null };
+const qT = () => `t=${encodeURIComponent(TOKEN)}`;
+function anchorLabel(a) {
+  const w = [a.title];
+  if (a.page != null) w.push(`p.${a.page + 1}`);
+  if (a.lines) w.push(a.lines[0] === a.lines[1] ? `l.${a.lines[0]}` : `l.${a.lines[0]}–${a.lines[1]}`);
+  if (a.text) w.push(`«${a.text.replace(/\s+/g, " ").slice(0, 60)}${a.text.length > 60 ? "…" : ""}»`);
+  else if (a.box) w.push("region");
+  return w.join(" · ");
+}
+async function openViewer(id, marking) {
+  const s = S.shared.find(x => x.id === id); if (!s) return;
+  MK.item = s; $("mTitle").textContent = s.title; $("mOpen").href = fileUrl(s.id);
+  $("modal").style.display = "block";
+  MK.tool = s.kind === "text" || s.kind === "html" ? "text" : "box";
+  $("mContent").innerHTML = marking || s.kind === "pdf" ? await markContent(s) : await contentFor(s, true);
+  MK.markable = !!$("mContent").querySelector(".surf");
+  setMarking(marking && MK.markable);
+  sizeStage(); drawMarks();
+}
+async function openMark(id, flash) {
+  if (!MK.item || MK.item.id !== id || $("modal").style.display !== "block") await openViewer(id, true);
+  else if (!MK.on) { $("mContent").innerHTML = await markContent(MK.item); MK.markable = true; setMarking(true); sizeStage(); drawMarks(); }
+  if (flash) { const b = $("mContent").querySelector(`[data-mk="${flash}"]`); if (b) { b.scrollIntoView({ block: "center" }); b.classList.add("flash"); } }
+}
+function sizeStage() {
+  const st = $("mContent").querySelector(".stage"); if (!st) return;
+  st.style.setProperty("--sw", st.clientWidth + "px"); st.style.setProperty("--sh", st.clientHeight + "px");
+}
+window.addEventListener("resize", () => { sizeStage(); });
+async function markContent(s) {
+  const url = fileUrl(s.id), L = '<div class="blayer"></div>';
+  if (s.kind === "image") return `<div class="stage fit"><div class="surf img" data-surf="0"><img src="${url}" alt="">${L}</div></div>`;
+  if (s.kind === "pdf") {
+    let info = { pages: 0 };
+    try { info = await (await fetch(`/files/${s.id}/pdf?${qT()}`)).json(); } catch (e) {}
+    if (!info.pages) {   // no PDF renderer on the server: view only, and say why
+      setTimeout(() => { $("mHint").textContent = "PDF marking needs pypdfium2 in the Python running the server (pip install pypdfium2), then restart"; });
+      return `<iframe src="${url}"></iframe>`;
+    }
+    return `<div class="stage">${Array.from({ length: info.pages }, (_, i) =>
+      `<div class="surf pg" data-surf="${i}"><img loading="lazy" src="/files/${s.id}/page/${i}?${qT()}" alt="page ${i + 1}" style="aspect-ratio:${info.sizes[i][0]}/${info.sizes[i][1]}">${L}</div>`).join("")}</div>`;
+  }
+  if (s.kind === "text") {
+    const t = await (await fetch(url)).text(); MK.raw = t;
+    const inner = /\.(md|markdown)$/i.test(s.name) ? `<div class="doc">${mdDoc(t)}</div>` : `<pre>${esc(t)}</pre>`;
+    return `<div class="stage"><div class="surf txt" data-surf="0">${inner}${L}</div></div>`;
+  }
+  if (s.kind === "html") return `<div class="stage"><div class="surf web" data-surf="0"><iframe sandbox="allow-scripts allow-popups allow-forms" src="${url}&mark=1"></iframe>${L}</div></div>`;
+  return `<pre>${esc(s.name)}\n\nThis file type can't be marked.</pre>`;
+}
+function setMarking(on) {
+  MK.on = !!on;
+  $("modal").classList.toggle("marking", MK.on);
+  $("modal").style.bottom = MK.on ? document.querySelector("footer").offsetHeight + "px" : "";
+  $("mMark").classList.toggle("on", MK.on);
+  $("mMark").style.display = MK.item && ["image", "pdf", "text", "html"].includes(MK.item.kind) ? "" : "none";
+  const canText = MK.item && (MK.item.kind === "text" || MK.item.kind === "html");
+  $("mTool").style.display = MK.on && canText ? "" : "none";
+  $("mTool").textContent = "Tool: " + MK.tool;
+  $("mContent").classList.toggle("boxmode", MK.on && MK.tool === "box");
+  $("mHint").textContent = !MK.on ? "" : MK.tool === "box" ? "drag a box over what you mean, then talk or type below" : "select text, then talk or type below";
+  sizeStage();
+}
+$("mMark").onclick = async () => {
+  if (!MK.item) return;
+  if (!MK.on && !MK.markable) { await openMark(MK.item.id); return; }
+  setMarking(!MK.on);
 };
-$("mClose").onclick = () => { $("modal").style.display = "none"; $("mContent").innerHTML = ""; };
+$("mTool").onclick = () => { MK.tool = MK.tool === "box" ? "text" : "box"; setMarking(true); };
+document.querySelector("#modal .mh").addEventListener("click", e => { const b = e.target.closest("button"); if (b) b.blur(); });   // keep Space for push-to-talk
+
+const surfOf = el => el && el.closest && el.closest(".surf");
+function relBox(surf, x0, y0, x1, y1) {   // client px -> 0..1 of the surface
+  const r = surf.getBoundingClientRect();
+  const n = (v, a, w) => Math.min(1, Math.max(0, (v - a) / w));
+  return [n(Math.min(x0, x1), r.left, r.width), n(Math.min(y0, y1), r.top, r.height), n(Math.max(x0, x1), r.left, r.width), n(Math.max(y0, y1), r.top, r.height)];
+}
+function caretAt(x, y) {
+  if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+  const p = document.caretPositionFromPoint && document.caretPositionFromPoint(x, y);
+  if (!p) return null; const r = document.createRange(); r.setStart(p.offsetNode, p.offset); return r;
+}
+function lineOf(container, node, off) {   // 1-based line number of a point inside a <pre>
+  const r = document.createRange(); r.setStart(container, 0); r.setEnd(node, off);
+  return r.toString().split("\n").length;
+}
+function textInfo(surf, range) {   // selected text + its lines in the source file
+  const text = range.toString().trim(); if (!text) return null;
+  const info = { text };
+  const pre = surf.querySelector("pre");
+  if (pre && pre.contains(range.startContainer)) {
+    info.lines = [lineOf(pre, range.startContainer, range.startOffset), lineOf(pre, range.endContainer, range.endOffset)];
+  } else if (MK.raw) {   // markdown: find the selection's first line in the source
+    const first = text.split("\n").map(x => x.trim()).find(Boolean).slice(0, 50);
+    const raw = MK.raw.split("\n"), strip = x => x.replace(/[*_`#>|]/g, "").replace(/\s+/g, " ");
+    const i = raw.findIndex(l => strip(l).includes(strip(first)));
+    if (i >= 0) info.lines = [i + 1, i + text.split("\n").length];
+  }
+  return info;
+}
+async function addMark(req) {
+  const s = MK.item; if (!s) return;
+  try {
+    const r = await fetch(`/annotate?${qT()}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item: s.id, ...req }) });
+    const a = await r.json(); if (a.error) throw new Error(a.error);
+    MK.pending.push(a); renderChips(); drawMarks();
+    if (!box.value.trim()) box.placeholder = "Say (hold Space) or type what you want done with the marked part…";
+  } catch (e) { $("mHint").textContent = "could not mark: " + e.message; }
+}
+function renderChips() {
+  const el = $("marks");
+  el.style.display = MK.pending.length ? "flex" : "none";
+  el.innerHTML = MK.pending.map((a, i) => `<span class="mchip" data-show="${esc(a.id)}" title="${esc(a.text || "region")}"><b>📌${i + 1}</b><span>${esc(anchorLabel(a))}</span><button data-unmark="${esc(a.id)}" title="Remove this mark">✕</button></span>`).join("");
+  if (!MK.pending.length) box.placeholder = PLACEHOLDER;
+  if (MK.on) $("modal").style.bottom = document.querySelector("footer").offsetHeight + "px";
+}
+$("marks").addEventListener("click", e => {
+  const x = e.target.closest("[data-unmark]");
+  if (x) { MK.pending = MK.pending.filter(a => a.id !== x.dataset.unmark); renderChips(); drawMarks(); return; }
+  const c = e.target.closest("[data-show]"); const a = c && MK.pending.find(p => p.id === c.dataset.show);
+  if (a) openMark(a.item, a.id);
+});
+$("log").addEventListener("click", e => { const c = e.target.closest("[data-anc]"); if (c) openMark(c.dataset.item, c.dataset.anc); });
+function drawMarks() {
+  const mc = $("mContent"); mc.querySelectorAll(".markbox").forEach(b => b.remove());
+  if (!MK.item) return;
+  const sent = S.messages.flatMap(m => (m.anchors || []).map(a => ({ ...a, _by: m.text })));
+  const all = [...sent.map(a => [a, "sent", "✓"]), ...MK.pending.map((a, i) => [a, "", "📌" + (i + 1)])];
+  for (const [a, cls, label] of all) {
+    if (a.item !== MK.item.id || !a.box) continue;
+    const surf = mc.querySelector(`.surf[data-surf="${a.page || 0}"]`); if (!surf) continue;
+    const [x0, y0, x1, y1] = a.box, d = document.createElement("div");
+    d.className = "markbox " + cls; d.dataset.mk = a.id; d.title = a._by || "";
+    Object.assign(d.style, { left: x0 * 100 + "%", top: y0 * 100 + "%", width: (x1 - x0) * 100 + "%", height: (y1 - y0) * 100 + "%" });
+    d.innerHTML = `<b>${esc(label)}</b>`; surf.appendChild(d);
+  }
+}
+// box tool: drag on a surface's layer
+$("mContent").addEventListener("pointerdown", e => {
+  if (!MK.on || MK.tool !== "box" || !e.target.classList.contains("blayer")) return;
+  const surf = surfOf(e.target), r = document.createElement("div"); r.className = "rubber"; surf.appendChild(r);
+  MK.drag = { surf, x: e.clientX, y: e.clientY, r }; e.target.setPointerCapture(e.pointerId); e.preventDefault();
+});
+$("mContent").addEventListener("pointermove", e => {
+  const d = MK.drag; if (!d) return;
+  const b = relBox(d.surf, d.x, d.y, e.clientX, e.clientY);
+  Object.assign(d.r.style, { left: b[0] * 100 + "%", top: b[1] * 100 + "%", width: (b[2] - b[0]) * 100 + "%", height: (b[3] - b[1]) * 100 + "%" });
+});
+$("mContent").addEventListener("pointerup", async e => {
+  const d = MK.drag; if (!d) return; MK.drag = null; d.r.remove();
+  let bx = relBox(d.surf, d.x, d.y, e.clientX, e.clientY);
+  const sr = d.surf.getBoundingClientRect();
+  if ((bx[2] - bx[0]) * sr.width < 6 && (bx[3] - bx[1]) * sr.height < 6) {   // a click: a small box around the point
+    const cx = (bx[0] + bx[2]) / 2, cy = (bx[1] + bx[3]) / 2, hw = 40 / sr.width, hh = 40 / sr.height;
+    bx = [cx - hw, cy - hh, cx + hw, cy + hh].map(v => Math.min(1, Math.max(0, v)));
+  }
+  const k = MK.item.kind, req = { mode: "box", box: bx };
+  if (k === "pdf") req.page = +d.surf.dataset.surf;
+  if (k === "text") {   // the text the box covers
+    const lay = d.surf.querySelector(".blayer"); lay.style.pointerEvents = "none";
+    const a = caretAt(Math.min(d.x, e.clientX), Math.min(d.y, e.clientY)), b = caretAt(Math.max(d.x, e.clientX), Math.max(d.y, e.clientY));
+    lay.style.pointerEvents = "";
+    if (a && b) { const r = document.createRange(); r.setStart(a.startContainer, a.startOffset); r.setEnd(b.startContainer, b.startOffset); Object.assign(req, textInfo(d.surf, r) || {}); }
+  }
+  if (k === "html") {   // ask the page what text is under the box
+    const fr = d.surf.querySelector("iframe"), id = Math.random().toString(36).slice(2);
+    req.text = await new Promise(res => {
+      const on = ev => { if (ev.source === fr.contentWindow && ev.data && ev.data.mr && ev.data.id === id) { removeEventListener("message", on); res(ev.data.text || ""); } };
+      addEventListener("message", on); fr.contentWindow.postMessage({ mrBox: bx, id }, "*");
+      setTimeout(() => { removeEventListener("message", on); res(""); }, 800);
+    });
+  }
+  addMark(req);
+});
+// text tool: a selection in a text document
+$("mContent").addEventListener("mouseup", () => {
+  if (!MK.on || MK.tool !== "text" || !MK.item || MK.item.kind !== "text") return;
+  setTimeout(() => {
+    const sel = getSelection(); if (!sel.rangeCount || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0), surf = surfOf(range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement);
+    if (!surf) return;
+    const info = textInfo(surf, range); if (!info) return;
+    const r = range.getBoundingClientRect();
+    addMark({ mode: "text", ...info, box: relBox(surf, r.left, r.top, r.right, r.bottom) });
+    sel.removeAllRanges();
+  }, 0);
+});
+// text tool on a shared web page: the injected helper reports selections
+addEventListener("message", e => {
+  const d = e.data; if (!d || !d.mr || d.kind !== "selection" || !MK.on || MK.tool !== "text" || !MK.item || MK.item.kind !== "html") return;
+  const fr = $("mContent").querySelector("iframe"); if (!fr || e.source !== fr.contentWindow) return;
+  addMark({ mode: "text", text: d.text });
+});
 
 // ---------------- composer & mentions
 const box = $("box"), sug = $("suggest"), PLACEHOLDER = box.placeholder;
 let sugItems = [], sugSel = 0;
 function autosize() { box.style.height = "auto"; box.style.height = Math.min(160, box.scrollHeight) + "px"; }
 function submit() {
-  const t = box.value.trim(); if (!t) return;
-  send({ type: "say", text: t }); box.value = ""; autosize(); hideSug();
+  const t = box.value.trim(), ids = MK.pending.map(a => a.id); if (!t && !ids.length) return;
+  send({ type: "say", text: t, anchors: ids }); box.value = ""; autosize(); hideSug();
+  if (ids.length) { MK.pending = []; renderChips(); drawMarks(); }
   if (room && room.focused && /@/.test(t)) { room.setFocus(false); syncFocusBtn(); }   // new task: back to the room
 }
 function insertMention(name) {
@@ -839,6 +1071,9 @@ let spaceHeld = false;
 document.addEventListener("keydown", e => {
   if (e.code === "Space" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing() && document.activeElement.tagName !== "BUTTON") {
     e.preventDefault(); if (!e.repeat && !spaceHeld) { spaceHeld = true; pttDown(); } return;
+  }
+  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing() && !/^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName)) {
+    if ($("modal").style.display === "block") $("mMark").click(); else if (S.current) openMark(S.current); return;
   }
   if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing() && document.activeElement.tagName !== "TEXTAREA" && document.activeElement.tagName !== "INPUT") { stopSpeech(); return; }
   if (e.ctrlKey && e.code === "Space") { e.preventDefault(); toggleMic(); }

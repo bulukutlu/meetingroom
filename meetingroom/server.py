@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from . import annotate
 from .agents import Agent, assign_people
 from .location import Location
 from .minutes import Recorder, build as build_minutes
@@ -40,6 +41,20 @@ KINDS = {
     "pdf": {".pdf"},
     "text": {".txt", ".md", ".csv", ".tsv", ".json", ".log", ".py", ".yaml", ".yml", ".tex"},
 }
+
+
+# Injected into shared HTML pages only while you are marking them (see /files).
+MARK_HELPER = """<script>(()=>{const P=window.parent;if(P===window)return;
+const send=o=>P.postMessage(Object.assign({mr:1},o),"*");
+document.addEventListener("mouseup",()=>setTimeout(()=>{const s=String(getSelection()||"").trim();
+ if(s)send({kind:"selection",text:s.slice(0,4000),scroll:[scrollX,scrollY]});},0));
+addEventListener("message",e=>{const d=e.data||{};if(!d.mrBox)return;const[x0,y0,x1,y1]=d.mrBox,W=innerWidth,H=innerHeight;
+ const R={l:x0*W,t:y0*H,r:x1*W,b:y1*H},out=[],seen=new Set();
+ const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let n;
+ while((n=w.nextNode())){const t=n.textContent.trim();if(!t)continue;const r=document.createRange();r.selectNodeContents(n);
+  const b=r.getBoundingClientRect();if(b.right<R.l||b.left>R.r||b.bottom<R.t||b.top>R.b)continue;
+  if(!seen.has(n.parentElement)){seen.add(n.parentElement);out.push(t);}}
+ send({kind:"box",id:d.id,text:out.join(" ").slice(0,4000),scroll:[scrollX,scrollY]});});})();</script>"""
 
 
 def kind_of(p: Path) -> str:
@@ -78,6 +93,8 @@ class Room:
         self.messages: list[dict] = []
         self.shared: list[dict] = []
         self.files: dict[str, Path] = {}
+        self.anchors: dict[str, dict] = {}   # marks you made on the shared screen
+        self.marks_dir = self.session_dir / "marks"
         self.clients: set[WebSocket] = set()
         self.approvals: dict[str, dict] = {}
         self.agents: dict[str, Agent] = {}
@@ -142,7 +159,8 @@ class Room:
         }
 
     # ---------------- messages & routing
-    async def post(self, sender: str, text: str, kind: str = "msg", hop: int = 0, turn: str | None = None) -> dict:
+    async def post(self, sender: str, text: str, kind: str = "msg", hop: int = 0, turn: str | None = None,
+                   anchors: list[dict] | None = None) -> dict:
         if sender.lower() in self.agents:
             # Agents only wake others by a deliberate handoff: the message must
             # START with @name(s). Passing mentions never trigger anyone.
@@ -154,6 +172,8 @@ class Room:
                 for nm in (a.name, a.person):
                     if re.search(rf"(?<![\w@-]){re.escape(nm)}(?![\w-])(?!\s+code\b)", text, re.I):
                         names.add(nm.lower())
+            if not names and anchors:         # a comment on the screen goes to whoever put that thing there
+                names = {a["owner"].lower() for a in anchors}
             if not names:                     # no one addressed: answering an agent's question, or the last speaker
                 q = self.open_question()
                 if not q and self.cfg.get("reply_to_last_speaker", True):
@@ -170,6 +190,8 @@ class Room:
              "ts": time.time(), "to": [a.name for a in targets]}
         if turn:
             m["turn"] = turn
+        if anchors:
+            m["anchors"] = anchors
         self.messages.append(m)
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(m) + "\n")
@@ -307,7 +329,7 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/files/{fid}")
-    async def files(fid: str, t: str | None = None):
+    async def files(fid: str, t: str | None = None, mark: int = 0):
         check_token(t)
         p = room_holder["room"].files.get(fid)
         if not p or not p.exists():
@@ -316,7 +338,51 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
         if p.suffix.lower() in (".html", ".htm", ".svg"):
             # Agent-made pages run sandboxed: no access to this app's origin.
             headers["Content-Security-Policy"] = "sandbox allow-scripts allow-popups allow-forms"
+        if mark and p.suffix.lower() in (".html", ".htm"):
+            # Marking mode: a tiny helper reports text selections / text under a box to
+            # the room page via postMessage (the page can't reach into the sandbox).
+            html = p.read_text(encoding="utf-8", errors="replace")
+            return HTMLResponse(html + MARK_HELPER, headers=headers)
         return FileResponse(p, headers=headers)
+
+    @app.get("/files/{fid}/pdf")
+    async def pdf_meta(fid: str, t: str | None = None):
+        check_token(t)
+        p = room_holder["room"].files.get(fid)
+        if not p or not p.exists() or p.suffix.lower() != ".pdf":
+            raise HTTPException(404)
+        return await asyncio.to_thread(annotate.pdf_info, p)
+
+    @app.get("/files/{fid}/page/{n}")
+    async def pdf_page(fid: str, n: int, t: str | None = None):
+        check_token(t)
+        room: Room = room_holder["room"]
+        p = room.files.get(fid)
+        if not p or not p.exists() or p.suffix.lower() != ".pdf" or not annotate.pdf_available():
+            raise HTTPException(404)
+        try:
+            png = await asyncio.to_thread(annotate.pdf_page_png, p, n, room.session_dir / "pages")
+        except Exception:
+            raise HTTPException(404)
+        return FileResponse(png)
+
+    @app.post("/annotate")
+    async def make_mark(request: Request, t: str | None = None):
+        check_token(t)
+        if request.headers.get("origin") not in allowed_origins:
+            raise HTTPException(403, "bad origin")
+        room: Room = room_holder["room"]
+        body = await request.json()
+        item = next((s for s in room.shared if s["id"] == body.get("item")), None)
+        p = room.files.get(str(body.get("item")))
+        if not item or not p:
+            raise HTTPException(404)
+        try:
+            a = await asyncio.to_thread(annotate.build_anchor, item, p, body, room.marks_dir)
+        except Exception as e:
+            return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=400)
+        room.anchors[a["id"]] = a
+        return a
 
     @app.post("/stt")
     async def stt(request: Request, t: str | None = None):
@@ -449,8 +515,11 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
             while True:
                 ev = json.loads(await websocket.receive_text())
                 typ = ev.get("type")
-                if typ == "say" and ev.get("text", "").strip():
-                    await room.post(room.user, ev["text"].strip())
+                if typ == "say" and (ev.get("text", "").strip() or ev.get("anchors")):
+                    anchors = [room.anchors[i] for i in ev.get("anchors") or [] if i in room.anchors]
+                    text = ev.get("text", "").strip() or ("Look at this." if anchors else "")
+                    if text:
+                        await room.post(room.user, text, anchors=anchors or None)
                 elif typ == "approve":
                     room.resolve_approval(ev.get("id", ""), ev.get("decision", "no"))
                 elif typ == "stop":

@@ -188,7 +188,15 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
   appears as a card showing the full command. Choose *Run it* or *Always for X*,
   or flip the tile toggle to auto-run. *Stop* / *Stop all* kill running work.
 - **Effort:** change an agent's reasoning effort live from its tile.
-- **Shared screen:** plots (PNG/SVG), markdown, CSV tables and sandboxed HTML pages.
+- **Shared screen:** plots (PNG/SVG), PDFs, markdown, CSV tables and sandboxed HTML pages.
+- **Marking the screen:** press `M` (or *✎ Mark*) and point at part of what is shown:
+  select text, or drag a box (a click marks a small area). The mark appears as a 📌 chip
+  above the composer; say or type what you want and it goes along with that message, by
+  default to the agent who shared the thing. Several marks can ride on one message.
+  Agents receive marks token-cheaply: selected text, the text under a box in a PDF and
+  file line numbers are sent as text; only a box over a picture becomes a small cropped
+  PNG (≤640 px) that the agent opens only if it needs to. Click a 📌 line in the
+  transcript to see that mark again. Crops are kept in `meetings/<session>/marks/`.
 - **Records:** each meeting gets `~/MeetingRoom/meetings/<session>/` with
   `transcript.jsonl`, `details.jsonl` (every tool call behind the scenes),
   `minutes.md` (kept up to date automatically) and `shared/` (every file shown).
@@ -250,6 +258,7 @@ requirements.txt
 meetingroom/
   __main__.py            CLI: run, set-key, keys, remove-key, minutes
   server.py              local hub: routing, approvals, shared screen, guards
+  annotate.py            marks on the shared screen: text/line/PDF-text anchors, image crops
   agents.py              agent loop; claude-code / codex / anthropic / openai / mock backends
   mcp_bridge.py          MCP server giving CLI agents approvals + share_to_screen
   tools.py               built-in tools for API agents
