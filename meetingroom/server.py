@@ -232,6 +232,27 @@ class Room:
         return f"'{name}' is now on the shared screen."
 
 
+def _minutes_summary(room) -> dict:
+    """Build minutes now and collect them (current + earlier sessions) for the goodbye page."""
+    try:
+        build_minutes(room.session_dir)
+    except Exception:
+        pass
+    out = []
+    root = room.session_dir.parent
+    dirs = sorted((d for d in root.iterdir() if d.is_dir()), reverse=True) if root.exists() else []
+    for d in dirs:
+        mp = d / "minutes.md"
+        if not mp.exists():
+            continue
+        try:
+            txt = mp.read_text(encoding="utf-8", errors="replace")[:80000]
+        except OSError:
+            continue
+        out.append({"session": d.name, "path": str(mp), "text": txt, "current": d == room.session_dir})
+    return {"current": str(room.session_dir / "minutes.md"), "sessions": out}
+
+
 def create_app(cfg: dict, port: int, token: str) -> FastAPI:
     room_holder: dict = {}
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
@@ -252,7 +273,8 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
         except Exception:
             pass
         try:
-            print(f"Meeting minutes: {build_minutes(room.session_dir)}")
+            mp = build_minutes(room.session_dir)
+            print(f"Meeting minutes: {mp}" if mp else "Empty meeting, no minutes written.")
         except Exception as e:
             print(f"could not write minutes: {e}")
 
@@ -435,7 +457,7 @@ def create_app(cfg: dict, port: int, token: str) -> FastAPI:
                 elif typ == "quit":
                     for a in room.agents.values():
                         a.stop()
-                    await room.broadcast({"type": "bye"})
+                    await room.broadcast({"type": "bye", "minutes": _minutes_summary(room)})
                     loop = asyncio.get_running_loop()
                     loop.call_later(0.8, os.kill, os.getpid(), signal.SIGINT)   # graceful uvicorn shutdown -> minutes, ssh cleanup
                 elif typ == "prefs":

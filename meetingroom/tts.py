@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.request
 import wave
+from concurrent.futures import Future
 from pathlib import Path
 
 import numpy as np
@@ -50,38 +51,24 @@ class Speaker:
         self.perms: dict[str, list[bytes]] = {}  # agent -> "I need your permission" clips
 
     def public(self) -> dict:
-        return {"status": self.status, "detail": self.detail, "voices": self.voices,
+        ready = self.status == "ready" and bool(self.perms or not self.voices)
+        return {"status": self.status if self.status != "ready" or ready else "loading", "detail": self.detail, "voices": self.voices,
                 "acks": {k: len(v) for k, v in self.acks.items()},
                 "perms": {k: len(v) for k, v in self.perms.items()}}
-
-    def _download(self, name: str):
-        dest = self.dir / name
-        if dest.exists() and dest.stat().st_size > 1_000_000:
-            return dest
-        self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        print(f"  narration: downloading {name} (one time) ...", flush=True)
-        with urllib.request.urlopen(RELEASE + name, timeout=60) as r, open(tmp, "wb") as f:
-            while chunk := r.read(1 << 20):
-                f.write(chunk)
-        tmp.rename(dest)
-        return dest
 
     def load(self):
         if self.wanted == "browser":
             return
         try:
-            from kokoro_onnx import Kokoro
-            model = self._download(FILES["model"])
-            voices = self._download(FILES["voices"])
             t = time.time()
-            self.model = Kokoro(str(model), str(voices))
-            self.model.create("Ready.", voice=VOICE_POOL[0], speed=self.speed, lang=self.lang)  # warm-up
-            self.status = "ready"
-            print(f"  narration: Kokoro ready ({time.time() - t:.1f}s warm-up)", flush=True)
+            self.model = preload(self.dir, self.speed, self.lang).result()   # usually already loading since start-up
+            self.status = "ready"   # synth_wav needs this; clips are published only once all are made
+            acks, perms = {}, {}
             for agent in self.voices:          # acknowledgement clips for instant playback
-                self.acks[agent] = [self.synth_wav(p, agent) for p in ACK_PHRASES]
-                self.perms[agent] = [self.synth_wav(p, agent) for p in PERMISSION_PHRASES]
+                acks[agent] = [self.synth_wav(p, agent) for p in ACK_PHRASES]
+                perms[agent] = [self.synth_wav(p, agent) for p in PERMISSION_PHRASES]
+            self.acks, self.perms = acks, perms
+            print(f"  narration: Kokoro ready ({time.time() - t:.1f}s wait + clips)", flush=True)
         except Exception as e:
             self.status, self.detail = "error", f"{type(e).__name__}: {e}"
             print(f"  narration: Kokoro unavailable, using browser voices ({self.detail})", flush=True)
@@ -97,6 +84,55 @@ class Speaker:
         with wave.open(buf, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm)
         return buf.getvalue()
+
+
+_PRELOADS: dict[Path, Future] = {}
+_PRELOAD_LOCK = threading.Lock()
+
+
+def _download(d: Path, name: str) -> Path:
+    dest = d / name
+    if dest.exists() and dest.stat().st_size > 1_000_000:
+        return dest
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    print(f"  narration: downloading {name} (one time) ...", flush=True)
+    with urllib.request.urlopen(RELEASE + name, timeout=60) as r, open(tmp, "wb") as f:
+        while chunk := r.read(1 << 20):
+            f.write(chunk)
+    tmp.rename(dest)
+    return dest
+
+
+def _load_model(d: Path, speed: float, lang: str):
+    from kokoro_onnx import Kokoro
+    model = Kokoro(str(_download(d, FILES["model"])), str(_download(d, FILES["voices"])))
+    model.create("Ready.", voice=VOICE_POOL[0], speed=speed, lang=lang)  # warm-up
+    return model
+
+
+def preload(model_dir: Path, speed: float = 1.1, lang: str = "en-us") -> Future:
+    """Start loading Kokoro in a background thread (once per model dir) and return its Future.
+    Called at program start so the model is warm by the time the room opens."""
+    with _PRELOAD_LOCK:
+        f = _PRELOADS.get(model_dir)
+        if f is None:
+            f = _PRELOADS[model_dir] = Future()
+            def run():
+                try:
+                    f.set_result(_load_model(model_dir, speed, lang))
+                except BaseException as e:
+                    f.set_exception(e)
+            threading.Thread(target=run, name="kokoro-preload", daemon=True).start()
+        return f
+
+
+def preload_from_cfg(cfg: dict):
+    c = cfg.get("narration") or {}
+    if (c.get("engine") or "kokoro").lower() == "browser":
+        return
+    d = Path(cfg["workspace"]).expanduser().resolve() / "models" / "kokoro"
+    preload(d, float(c.get("speed") or 1.1), c.get("lang") or "en-us")
 
 
 PERMISSION_PHRASES = ["I need your permission for this.", "Can I get your approval, please?", "I need a permission here."]

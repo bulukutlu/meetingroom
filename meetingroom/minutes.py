@@ -99,10 +99,13 @@ def _render_turn(evs: list[dict], reply: str) -> list[str]:
     return lines
 
 
-def build(session_dir: Path) -> Path:
+def build(session_dir: Path) -> Path | None:
+    """Write minutes.md; return None (and write nothing) if nothing was said or done."""
     session_dir = Path(session_dir)
     msgs = _load(session_dir / "transcript.jsonl")
     det = _load(session_dir / "details.jsonl")
+    if not det and not any(m.get("kind") not in ("note", "system") for m in msgs):
+        return None
     by_turn: dict[str, list[dict]] = {}
     for e in det:
         if e.get("turn"):

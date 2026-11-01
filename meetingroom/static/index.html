@@ -93,6 +93,14 @@ header .spacer{flex:1}
 .ap .yes{background:#2f5a2a}
 .ap .no{background:#5a2a24}
 .loading{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-family:var(--mono)}
+/* gate: blocks the room until local Whisper is ready */
+#gate{position:fixed;inset:0;z-index:50;background:#0e0907;color:#efe6d6;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-family:var(--mono)}
+#gate.hide{display:none}
+#gate .t{font-size:20px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+#gate .s{color:#a8977f;font-size:13px;text-align:center;max-width:520px}
+#gate .bar{width:420px;height:14px;border:2px solid #000;background:#1a130d;overflow:hidden;position:relative}
+#gate .bar i{position:absolute;top:0;bottom:0;width:35%;background:#d9a441;animation:gate 1.3s ease-in-out infinite}
+@keyframes gate{0%{left:-35%}100%{left:100%}}
 
 /* modal full-size viewer */
 #modal{position:fixed;inset:0;background:#000d;display:none;z-index:20;padding:28px}
@@ -189,6 +197,8 @@ textarea:focus{border-color:#5d4a35}
 <script type="importmap">{"imports":{"three":"/static/vendor/three.min.js"}}</script>
 </head>
 <body>
+<div id="gate"><div class="t">Loading Whisper</div><div class="bar"><i></i></div>
+  <div class="s" id="gateMsg">Connecting to the room…</div></div>
 <header>
   <div class="brand"><span class="rec"></span>Meeting Room</div>
   <div class="meta" id="meta"></div>
@@ -341,7 +351,7 @@ function actx() {
 }
 ["pointerdown", "keydown"].forEach(ev => document.addEventListener(ev, () => actx(), { passive: true }));
 async function loadAcks() {
-  if (AU.loaded || !S.tts || S.tts.status !== "ready" || !S.tts.acks) return;
+  if (AU.loaded || !S.tts || S.tts.status !== "ready" || !S.tts.acks || !Object.keys(S.tts.perms || {}).length) return;
   AU.loaded = true;
   const c = actx(), q = `?t=${encodeURIComponent(TOKEN)}`;
   for (const [agent, n] of Object.entries(S.tts.acks)) {
@@ -357,11 +367,21 @@ async function loadAcks() {
     }
   }
 }
-function askPermission(name) {   // spoken "I need your permission" when an approval card appears
+async function askPermission(name) {   // spoken "I need your permission" when an approval card appears
   if (!$("sounds").checked || isRecording()) return;
-  const list = AU.perms[name.toLowerCase()];
-  if (list && list.length && AU.ctx) playBuffer(list[Math.floor(Math.random() * list.length)], 0.95);
-  else if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance("I need your permission for this."));
+  const key = name.toLowerCase(), list = AU.perms[key];
+  if (list && list.length) return playBuffer(list[Math.floor(Math.random() * list.length)], 0.95);
+  if (ttsReady()) {   // clip not preloaded yet: fetch one now instead of falling back
+    try {
+      const r = await fetch(`/tts/perm/${encodeURIComponent(key)}/0?t=${encodeURIComponent(TOKEN)}`);
+      if (r.ok) { const b = await actx().decodeAudioData(await r.arrayBuffer()); (AU.perms[key] = AU.perms[key] || []).push(b); return playBuffer(b, 0.95); }
+    } catch (e) {}
+  }
+  if (window.speechSynthesis) {   // Chrome can leave the queue stalled after pause(); kick it so this plays now
+    speechSynthesis.resume();
+    speechSynthesis.speak(new SpeechSynthesisUtterance("I need your permission for this."));
+    speechSynthesis.resume();
+  }
 }
 function playBuffer(buf, gain = 0.9) {
   const c = actx(), s = c.createBufferSource(), g = c.createGain();
@@ -429,7 +449,7 @@ function handle(ev) {
       renderPeople(); renderLog(); renderShared(); renderApprovals(); updateReplyHint();
       if (S.shared.length) show(S.shared[S.shared.length - 1].id, false);
       break;
-    case "bye": showEnded(); break;
+    case "bye": showEnded(ev.minutes); break;
     case "agent": {
       const prev = (S.agents.find(a => a.name === ev.agent.name) || {}).status;
       if (ev.agent.status === "thinking" && (prev === "idle" || prev === undefined)) acknowledge(ev.agent.name);
@@ -563,9 +583,16 @@ function endMeeting() {
   ended = true; send({ type: "quit" });
 }
 $("endmeeting").onclick = endMeeting;
-function showEnded() {
+function showEnded(m) {
   ended = true; if (ws) ws.onclose = null;
-  document.body.insertAdjacentHTML("beforeend", '<div style="position:fixed;inset:0;z-index:9999;background:#0e0907;color:#efe6d6;display:flex;flex-direction:column;align-items:center;justify-content:center;font:16px system-ui;gap:8px"><div style="font-size:28px;font-weight:600">Meeting ended</div><div style="color:#a8977f">The room has shut down. Minutes are in the session folder. You can close this tab.</div></div>');
+  const esc = t => String(t).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const sess = (m && m.sessions) || [];
+  const cur = sess.find(x => x.current);
+  const box = "background:#1a120e;border:1px solid #3a2c22;border-radius:8px;padding:10px 14px;margin:8px 0;text-align:left";
+  const pre = "white-space:pre-wrap;font:12px ui-monospace,monospace;color:#efe6d6;max-height:55vh;overflow:auto;margin:8px 0 0";
+  const item = x => `<details ${x.current ? "open" : ""} style="${box}"><summary style="cursor:pointer"><b>${esc(x.session)}</b>${x.current ? " (this meeting)" : ""}<br><code style="color:#a8977f;user-select:all">${esc(x.path)}</code></summary><pre style="${pre}">${esc(x.text)}</pre></details>`;
+  const body = sess.length ? sess.map(item).join("") : '<div style="color:#a8977f">No minutes were recorded (empty meeting).</div>';
+  document.body.insertAdjacentHTML("beforeend", `<div style="position:fixed;inset:0;z-index:9999;background:#0e0907;color:#efe6d6;overflow:auto;font:15px system-ui"><div style="max-width:900px;margin:0 auto;padding:32px 20px"><div style="font-size:28px;font-weight:600;text-align:center">Meeting ended</div><div style="color:#a8977f;text-align:center;margin:6px 0 18px">The room has shut down. You can close this tab.</div>${cur ? `<div style="color:#a8977f">Minutes of this meeting saved at:<br><code style="color:#efe6d6;user-select:all">${esc(cur.path)}</code></div>` : ""}<div style="margin-top:14px;font-weight:600">Minutes by meeting</div>${body}</div></div>`);
 }
 $("stopall").onclick = () => { send({ type: "stop_all" }); stopSpeech(); };
 
@@ -693,7 +720,17 @@ $("send").onclick = submit;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false, base = "";
 const whisperReady = () => S.stt && S.stt.status === "ready";
+const gateT0 = Date.now();
+function renderGate() {
+  const st = S.stt, g = $("gate");
+  const wait = !st || st.status === "loading";   // forced wait: speech is unreliable until Whisper is warm
+  g.classList.toggle("hide", !wait);
+  if (wait) $("gateMsg").textContent = (!st ? "Connecting to the room…" :
+    "Speech-to-text runs on this computer. The first start downloads the model once.") + `  ${Math.round((Date.now() - gateT0) / 1000)}s`;
+}
+setInterval(() => { if (!$("gate").classList.contains("hide")) renderGate(); }, 1000);
 function renderVoice() {
+  renderGate();
   const v = $("voice"), st = S.stt || {};
   if (st.status === "ready") { v.textContent = "Voice: Whisper (local)"; v.className = "vchip ok"; v.title = `${st.engine} · ${st.model} · audio stays on this computer`; }
   else if (st.status === "loading") { v.textContent = "Voice: loading Whisper…"; v.className = "vchip wait"; v.title = "First start downloads the model once. Browser speech is used meanwhile."; }
@@ -776,6 +813,7 @@ function toggleMic() {
 }
 // Hold-to-talk. Space works whenever you're not typing (input empty or not focused).
 function pttDown() {
+  if (!$("gate").classList.contains("hide")) return;
   if (listening || W.busy || W.starting) return;
   holdSpeech();
   if (whisperReady()) { W.starting = whisperStart().catch(e => { listening = false; alert("Microphone not available: " + e.message); }).finally(() => { W.starting = null; }); }

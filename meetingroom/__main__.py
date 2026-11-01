@@ -100,6 +100,8 @@ def main():
     token = secrets.token_urlsafe(24)  # new every start; never stored
     url = f"http://127.0.0.1:{a.port}/?t={token}"
     opener = None if a.no_browser else (lambda: threading.Timer(1.0, lambda: webbrowser.open(url)).start())
+    from .tts import preload_from_cfg
+    preload_from_cfg(cfg)   # warm Kokoro while the picker page is open
     all_agents = cfg["agents"]
     loc = Location.from_dict({"path": a.project or "", "host": a.ssh or ""})
     if a.ssh and not a.project:
