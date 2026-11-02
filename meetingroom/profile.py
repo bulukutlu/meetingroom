@@ -8,7 +8,7 @@ DEFAULT_NAME = "Berkin"
 
 
 def _file(cfg: dict) -> Path:
-    return Path(cfg.get("workspace", "~/MeetingRoom")).expanduser() / "profile.json"
+    return Path(cfg.get("workspace", "workspace")).expanduser() / "profile.json"
 
 
 def clean(name) -> str:

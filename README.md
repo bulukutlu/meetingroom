@@ -1,6 +1,6 @@
 # Meeting Room
 
-**v1.0.0** · A local, video-call style room where you hold a working meeting with
+**v1.0.1** · A local, video-call style room where you hold a working meeting with
 several AI agents at once: Claude Code, Codex and API models side by side. You
 address them with `@name`, by typing or by talking. They do real work on **your**
 computer (Python, shell, files), put plots, tables and HTML pages on a shared
@@ -23,7 +23,7 @@ screen, and answer out loud.
 ## 1. Quick start (2 minutes)
 
 Requirements: **Python 3.11+** (3.11 to 3.14 tested by `run.sh`), **macOS or Linux**, a recent
-Chrome / Edge / Safari (WebGL and microphone access). Windows is not supported by `run.sh`;
+Chrome / Edge / Safari (**WebGL 2** and microphone access). Windows is not supported by `run.sh`;
 the manual install below should work but is untested. Local speech uses MLX Whisper on Apple
 Silicon and faster-whisper (CPU) elsewhere, so `requirements.txt` picks the right one for you.
 Allow about 4 GB of disk for the environment and speech models (set `engine: browser` under
@@ -40,6 +40,13 @@ The first run creates a private `.venv` and installs everything (one time, a few
 minutes; nothing goes into your system or conda Python). Your browser opens on a
 room with three **demo agents** that need no login or key but really run code and
 show plots. Type `@all make a plot` to see it work.
+
+The installer prints graphics setup hints, and the browser performs a real WebGL 2
+rendering check before opening the 3D view. If it fails, setup instructions and a retry
+button appear. On Ubuntu, check browser graphics acceleration and your graphics drivers;
+installing Python dependencies alone cannot enable browser GPU access. Run `./run.sh doctor`
+for read-only Linux desktop/library diagnostics. See [Ubuntu graphics setup](docs/graphics-setup.md)
+and the standalone [browser graphics test](docs/graphics-check.html).
 
 When that works, set up real agents (section 2) and start:
 
@@ -92,7 +99,7 @@ Uses the `claude` CLI and your claude.ai subscription.
 ```
 
 Each agent is your own Claude Code running headless in its own folder
-(`~/MeetingRoom/agents/<name>/`), continuing one conversation across turns. It
+(`workspace/agents/<name>/`), continuing one conversation across turns. It
 keeps all its tools, skills, MCP servers, `CLAUDE.md` and settings. A small local
 MCP bridge adds two things: permission prompts show up as **approval cards** in
 the room, and a **`share_to_screen`** tool puts results on the shared screen.
@@ -167,7 +174,7 @@ Key-free scripted agents for trying the UI (`./run.sh --demo`).
 
 ```yaml
 # user_name: Berkin               # optional fallback; your name is asked on first launch and editable in Settings
-workspace: ~/MeetingRoom        # agent folders + meeting records
+workspace: workspace            # agent folders + meeting records; relative = inside this repo folder
 python:                         # interpreter for API agents' run_python (empty = this app's)
 reply_to_last_speaker: true     # un-addressed messages go to whoever spoke last
 
@@ -267,14 +274,14 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
   file line numbers are sent as text; only a box over a picture becomes a small cropped
   PNG (≤640 px) that the agent opens only if it needs to. Click a 📌 line in the
   transcript to see that mark again. Crops are kept in `meetings/<session>/marks/`.
-- **Records:** each meeting gets `~/MeetingRoom/meetings/<session>/` with
+- **Records:** each meeting gets `workspace/meetings/<session>/` with
   `transcript.jsonl`, `details.jsonl` (every tool call behind the scenes),
   `minutes.md` (kept up to date automatically) and `shared/` (every file shown).
   `room.json` stores resumable state locally with owner-only permissions; it excludes
   configured credentials and live connection tokens. Keep the whole session folder
   and project files to preserve attachments and shared artifacts. CLI histories also
   depend on the original machine's CLI storage (or the original SSH host).
-  Rebuild minutes of an old session: `./run.sh minutes ~/MeetingRoom/meetings/<session>`.
+  Rebuild minutes of an old session: `./run.sh minutes workspace/meetings/<session>`.
 
 ---
 
@@ -282,7 +289,7 @@ The first start downloads the Whisper model once (~1.6 GB) and the Kokoro voices
 
 The start page asks where the work happens:
 
-- **Agents' own folders** (default): each agent works in `~/MeetingRoom/agents/<name>/`.
+- **Agents' own folders** (default): each agent works in `workspace/agents/<name>/`.
 - **Project folder**: pick any folder on this computer (type it or *Browse…*); every agent works there.
 - **Remote over SSH**: pick a host (aliases from `~/.ssh/config` are suggested) and a folder on it.
   Claude Code and Codex agents then run *on that machine* in that folder; approval cards and the
@@ -350,6 +357,12 @@ tests/                   `python -m pytest tests` (Python) and `node tests/*.mjs
 ```
 
 ## Changelog
+
+- **1.0.1**: check browser WebGL 2 before entering the 3D view; show Ubuntu graphics
+  repair steps and downloadable diagnostics; add `./run.sh doctor` and a standalone
+  browser graphics test. New default workspace is `workspace/` inside the cloned repo,
+  including demo data. Existing home-directory data is preserved and is not moved
+  automatically; see [upgrade notes](docs/release-v1.0.1.md) before restarting.
 
 - **1.0.0**: first stable release. Names, faces and voices follow the model type (OpenAI agents
   are always female, Claude agents male, voice gender matches the face); leaders set during the

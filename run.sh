@@ -20,6 +20,7 @@ pick_python() {
 
 if [ ! -x "$VENV/bin/python" ]; then
   PY="$(pick_python)" || { echo "Python 3.11 or newer is required (e.g. 'brew install python' or conda)."; exit 1; }
+  "$PY" -m meetingroom.graphics
   echo "First run: creating $VENV with $("$PY" --version) ..."
   "$PY" -m venv "$VENV"
 fi

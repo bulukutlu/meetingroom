@@ -6,7 +6,7 @@
 
 # Everything the agents create lives here (one sub-folder per agent, plus
 # meetings/<date>/ with the transcript and every file shown on screen).
-workspace: ~/MeetingRoom
+workspace: workspace          # relative paths are inside this repo folder (gitignored)
 
 # Python used by the built-in run_python tool of API agents (Claude Code agents
 # use their own Bash tool and whatever python is on your PATH).

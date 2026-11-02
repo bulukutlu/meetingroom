@@ -138,7 +138,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
 <div class="bar"><span class="link" id="all">Select all / none</span><span class="link" id="back">&larr; Back to the corridor</span><button class="go" id="go">Open room</button></div>
 </div>
 <script type="module">
+import { requireGraphics, showGraphicsFailure } from '/static/graphics-check.js';
 const AGENTS=__AGENTS__, T=__TOKEN__, KEY='mr-agents', Q='?t='+encodeURIComponent(T);
+await requireGraphics();
 const THREE=await import('/static/vendor/three.min.js');
 const FACES=await fetch('/static/faces/faces.json').then(r=>r.json()).catch(()=>[]);
 const MAXC=4;
@@ -288,7 +290,7 @@ try{const {createCorridor}=await import('/static/corridor3d.js');
   onClose:async r=>{if(!confirm('Close "'+r.title+'"? Its agents will stop.'))return;
    const save=confirm('Save this meeting’s status for later? OK saves participants, conversation and shared screen. Cancel closes without a resumable save; minutes are kept.');
    const res=await fetch('/api/close/'+r.id+Q,{method:'POST',body:JSON.stringify({save})});if(!res.ok)alert('Could not close and save the meeting. Please try again.');refresh()}})}
-catch(e){$('empty').style.display='';$('empty').textContent='3D view unavailable ('+e.message+'). Use + New room.'}
+catch(e){showGraphicsFailure({ok:false,reason:'renderer-start-failed',detail:'The 3D renderer could not start: '+e.message})}
 async function refresh(){
  const c=$('conn');
  try{const r=await fetch('/api/rooms'+Q,{cache:'no-store'});if(!r.ok)throw 0;ROOMS=(await r.json()).rooms;c.className='conn on';c.lastChild.textContent='live on this computer'}

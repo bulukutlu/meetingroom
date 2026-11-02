@@ -1,0 +1,93 @@
+// Probe the browser that will render the app, not Python's GPU environment.
+export function checkGraphics(makeCanvas = () => document.createElement('canvas')) {
+  const canvas = makeCanvas();
+  canvas.width = canvas.height = 2;
+  let gl = null, message = '', program = null;
+  const shaders = [];
+  canvas.addEventListener('webglcontextcreationerror', e => { message = e.statusMessage || ''; });
+  try {
+    gl = canvas.getContext('webgl2', { alpha: false, antialias: false, stencil: true, failIfMajorPerformanceCaveat: false });
+    if (!gl) return { ok: false, reason: 'webgl2-unavailable', detail: message || 'This browser could not create a WebGL 2 context.' };
+    const compile = (type, source) => {
+      const shader = gl.createShader(type); shaders.push(shader);
+      gl.shaderSource(shader, source); gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw Error('The graphics driver could not compile a WebGL 2 shader.');
+      return shader;
+    };
+    const vertex = compile(gl.VERTEX_SHADER, '#version 300 es\nvoid main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);gl_Position=vec4(p*2.0-1.0,0.0,1.0);}');
+    const fragment = compile(gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float;out vec4 color;void main(){color=vec4(0.2,0.8,0.4,1.0);}');
+    program = gl.createProgram(); gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw Error('The graphics driver could not link the WebGL 2 test.');
+    if (gl.getParameter(gl.STENCIL_BITS) < 8) throw Error('The graphics context has no stencil buffer for the room renderer.');
+    gl.useProgram(program); gl.viewport(0, 0, 2, 2); gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const pixel = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+    if (gl.isContextLost() || gl.getError() !== gl.NO_ERROR || Math.abs(pixel[1] - 204) > 3 || Math.abs(pixel[0] - 51) > 3) {
+      throw Error('WebGL 2 was created, but the browser could not draw the test image correctly.');
+    }
+    return { ok: true, reason: 'ready', detail: 'WebGL 2 context, shaders, stencil buffer and drawing test passed.' };
+  } catch (e) {
+    return { ok: false, reason: 'graphics-test-failed', detail: String(e.message || e).slice(0, 400) };
+  } finally {
+    if (gl) {
+      try {
+        if (program) gl.deleteProgram(program);
+        for (const shader of shaders) if (shader) gl.deleteShader(shader);
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
+      } catch (_) { /* Context loss must not hide the original diagnostic. */ }
+    }
+    canvas.remove?.();
+  }
+}
+
+const CSS = `#graphicsSetup{position:fixed;inset:0;z-index:10050;background:#120d09;color:#efe6d6;overflow:auto;padding:5vh 20px;font:14px/1.5 ui-monospace,monospace}#graphicsSetup .graphics-box{max-width:800px;margin:auto;background:#1b1510;border:2px solid #46382a;padding:24px;box-shadow:5px 5px #000}#graphicsSetup h1{font-size:20px;color:#f0b44a;margin:0 0 14px}#graphicsSetup h2{font-size:15px;margin:22px 0 8px}#graphicsSetup p{margin:10px 0}#graphicsSetup li{margin:8px 0}#graphicsSetup code,#graphicsSetup pre{background:#120d09;color:#cfe9c8;padding:3px 5px;overflow:auto}#graphicsSetup pre{padding:10px;white-space:pre-wrap}#graphicsSetup button{border:2px solid #000;background:#2f5a2a;color:#efe6d6;padding:8px 12px;margin:8px 8px 0 0;font:inherit;cursor:pointer}#graphicsSetup button.secondary{background:#2e241b}#graphicsSetup a{color:#f0b44a}#graphicsSetup .graphics-detail{color:#cbbca7;overflow-wrap:anywhere}`;
+
+export function showGraphicsFailure(result, onReady = () => location.reload()) {
+  document.getElementById('graphicsSetup')?.remove();
+  const panel = document.createElement('section'); panel.id = 'graphicsSetup';
+  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); panel.setAttribute('aria-labelledby', 'graphicsTitle');
+  // Constant markup only. Driver/browser errors are assigned as text below.
+  panel.innerHTML = `<style>${CSS}</style><div class="graphics-box"><h1 id="graphicsTitle">3D graphics needs attention</h1>
+    <p id="graphicsIntro">Meeting Room needs WebGL 2. This browser did not pass the graphics check, so the 3D view has not started.</p>
+    <p class="graphics-detail" id="graphicsDetail"></p>
+    <h2>Check the browser first</h2><ol>
+      <li>In Chrome or Edge, open Settings → System, enable “Use graphics acceleration when available”, and relaunch the browser.</li>
+      <li>Open <code>chrome://gpu</code> (or <code>edge://gpu</code>) in a new tab. Check WebGL2 and the listed driver problems.</li>
+      <li>Update the browser and graphics drivers. Another up-to-date browser on the same desktop can help identify a browser-specific problem.</li>
+    </ol>
+    <div id="graphicsLinux"><h2>Ubuntu graphics setup</h2><p>Apply Ubuntu system updates. For NVIDIA, use Software &amp; Updates → Additional Drivers and select the recommended tested driver, then reboot.</p>
+    <p>For an Intel/AMD Mesa desktop with missing graphics packages:</p><pre>sudo apt update
+sudo apt install libgl1 libegl1 libgl1-mesa-dri libegl-mesa0 mesa-utils</pre>
+    <p><code>glxinfo -B</code> reports desktop OpenGL support; it does not prove that this browser supports WebGL 2.</p>
+    <p>In a virtual machine, enable its 3D acceleration and install guest graphics drivers. A remote desktop session may not expose the same GPU as the local desktop.</p>
+    <p>Terminal diagnostics: <code>./run.sh doctor</code></p></div>
+    <button id="graphicsRetry">Check again</button><button class="secondary" id="graphicsDownload">Download diagnostics</button>
+    <p id="graphicsCheckStatus" aria-live="polite"></p>
+    <p><a href="https://ubuntu.com/desktop/docs/en/latest/how-to/graphics/install-nvidia-drivers/" target="_blank" rel="noopener noreferrer">Ubuntu driver instructions</a> · <a href="https://threejs.org/docs/pages/WebGLRenderer.html" target="_blank" rel="noopener noreferrer">3D renderer requirements</a></p>
+  </div>`;
+  panel.querySelector('#graphicsDetail').textContent = result.detail;
+  if (result.reason === 'renderer-start-failed') {
+    panel.querySelector('#graphicsIntro').textContent = 'The browser passed the preliminary check, but the 3D renderer did not finish starting. The error below may indicate a driver problem or an application error.';
+  }
+  panel.querySelector('#graphicsLinux').hidden = !/linux/i.test(navigator.userAgent);
+  panel.querySelector('#graphicsRetry').onclick = () => {
+    const next = checkGraphics();
+    if (next.ok) { panel.remove(); onReady(); }
+    else { result = next; panel.querySelector('#graphicsDetail').textContent = next.detail; panel.querySelector('#graphicsCheckStatus').textContent = 'The check still fails. Apply the steps above and retry after restarting the browser.'; }
+  };
+  panel.querySelector('#graphicsDownload').onclick = () => {
+    // Deliberately omit the current URL/query: it can contain the private access token.
+    const diagnostic = { checkedAt: new Date().toISOString(), browser: navigator.userAgent, origin: location.origin, graphics: result };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(diagnostic, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'meetingroom-graphics.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  document.body.append(panel); panel.querySelector('#graphicsRetry').focus();
+  return panel;
+}
+
+export async function requireGraphics() {
+  const result = checkGraphics();
+  if (result.ok) return result;
+  await new Promise(resolve => showGraphicsFailure(result, resolve));
+  return { ok: true };
+}

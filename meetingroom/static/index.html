@@ -345,6 +345,7 @@ footer.drop{outline:2px dashed var(--amber);outline-offset:-4px}
 <script type="module">
 import { createRoom } from "/static/room3d.js";
 import { TranscriptAgreement } from "/static/live-dictation.js";
+import { requireGraphics, showGraphicsFailure } from "/static/graphics-check.js";
 
 // --- token: read once, keep in this tab only, scrub from the address bar
 const qs = new URLSearchParams(location.search);
@@ -370,12 +371,13 @@ document.addEventListener("click", e => { const f = e.target.closest("[data-fold
   try { localStorage.setItem(FOLDS_KEY, JSON.stringify({ ...loadFolds(), [f.dataset.fold]: p.classList.contains("fold") })); } catch (err) {}
 } });
 
+await requireGraphics();
 try {
   room = createRoom({ wrap: $("game"), canvas: $("cv"), labels: $("labels"), overlay: $("overlay"),
     onPick: p => p && p.kind === "door" ? goToCorridor() : p && p.kind === "agent" ? openAgentMenu(p.name, p.x, p.y) : p && p.kind === "seat" ? openSeatMenu(p.x, p.y) : closeAgentMenu(),
     onFocusChange: () => { closeAgentMenu(); syncFocusBtn(); } });
   $("loading").remove();
-} catch (e) { $("loading").textContent = "3D view unavailable: " + e.message; }
+} catch (e) { showGraphicsFailure({ok:false,reason:"renderer-start-failed",detail:"The 3D renderer could not start: " + e.message}); }
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const personOf = h => (S.agents.find(a => a.name === h) || {}).person || h;

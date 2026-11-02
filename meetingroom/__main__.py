@@ -28,10 +28,12 @@ import yaml
 
 from . import keys
 
+ROOT = Path(__file__).resolve().parent.parent   # the cloned repo: all app data lives under it
+
 DEMO_CFG = {
     "user_name": "You",
     "_demo": True,
-    "workspace": "~/MeetingRoom-demo",
+    "workspace": str(ROOT / "workspace" / "demo"),
     "python": sys.executable,
     "agents": [
         {"name": "claude", "provider": "mock", "model": "demo", "color": "#d97757", "role": "Analysis lead"},
@@ -50,7 +52,8 @@ def load_cfg(path: str | None) -> dict:
         if any(bad in (a or {}) for a in cfg.get("agents", [])) or bad in cfg:
             sys.exit(f"Refusing to start: '{bad}' found in {p}. Keys belong in the OS keychain "
                      "(python -m meetingroom set-key <provider>), never in config files.")
-    cfg.setdefault("workspace", "~/MeetingRoom")
+    ws = Path(os.path.expanduser(str(cfg.get("workspace") or "workspace")))
+    cfg["workspace"] = str(ws if ws.is_absolute() else ROOT / ws)   # relative = inside the repo, never the cwd
     cfg["python"] = os.path.expanduser(cfg.get("python") or sys.executable)
     return cfg
 
@@ -58,6 +61,7 @@ def load_cfg(path: str | None) -> dict:
 def main():
     ap = argparse.ArgumentParser(prog="meetingroom")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("doctor", help="Show read-only desktop graphics diagnostics and Ubuntu setup hints")
     clean = sub.add_parser("storage", help="Audit meeting storage; optionally compact without removing records")
     clean.add_argument("--config")
     clean.add_argument("--compact", action="store_true", help="Deduplicate archive copies and clear regenerable PDF page images; close the app first")
@@ -78,6 +82,11 @@ def main():
     mn = sub.add_parser("minutes", help="(re)build minutes.md for a session folder")
     mn.add_argument("session_dir")
     a = ap.parse_args()
+
+    if a.cmd == "doctor":
+        from .graphics import startup_graphics_notice
+        startup_graphics_notice()
+        return
 
     if a.cmd == "minutes":
         from .minutes import build
@@ -112,6 +121,8 @@ def main():
         return
 
     cfg = DEMO_CFG if a.demo else load_cfg(a.config)
+    from .graphics import startup_graphics_notice
+    startup_graphics_notice()
     import uuid
     import uvicorn
     from .location import Location

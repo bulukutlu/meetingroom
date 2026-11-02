@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import platform
+import re
 from pathlib import Path
 import plistlib
 import shutil
@@ -13,6 +14,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
+VERSION = re.search(r'__version__\s*=\s*"([^"]+)"', (ROOT / 'meetingroom/__init__.py').read_text()).group(1)
 
 
 def build(output: Path, project: Path = ROOT, replace: bool = False):
@@ -60,7 +62,7 @@ def build(output: Path, project: Path = ROOT, replace: bool = False):
         icon.save(resources / 'MeetingRoom.icns', format='ICNS')
         info = {'CFBundleIdentifier':'local.berkin.meetingroom','CFBundleName':'Meeting Room',
                 'CFBundleDisplayName':'Meeting Room','CFBundleExecutable':'MeetingRoom',
-                'CFBundlePackageType':'APPL','CFBundleVersion':'1','CFBundleShortVersionString':'1.0.0',
+                'CFBundlePackageType':'APPL','CFBundleVersion':VERSION,'CFBundleShortVersionString':VERSION,
                 'CFBundleIconFile':'MeetingRoom.icns','NSPrincipalClass':'NSApplication',
                 'LSMinimumSystemVersion':'13.0','NSHighResolutionCapable':True}
         (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
