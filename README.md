@@ -1,6 +1,6 @@
 # Meeting Room
 
-**v1.0.1** · A local, video-call style room where you hold a working meeting with
+**v1.0.2** · A local, video-call style room where you hold a working meeting with
 several AI agents at once: Claude Code, Codex and API models side by side. You
 address them with `@name`, by typing or by talking. They do real work on **your**
 computer (Python, shell, files), put plots, tables and HTML pages on a shared
@@ -357,6 +357,10 @@ tests/                   `python -m pytest tests` (Python) and `node tests/*.mjs
 ```
 
 ## Changelog
+
+- **1.0.2**: fix new-room creation silently dropping numbered agent seats. Rooms now
+  include every selected instance, even when only numbered seats are chosen. Invalid
+  selections and the four-per-type/twelve-total limits produce a clear error.
 
 - **1.0.1**: check browser WebGL 2 before entering the 3D view; show Ubuntu graphics
   repair steps and downloadable diagnostics; add `./run.sh doctor` and a standalone

@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from . import annotate, saved, storage
-from .agents import MAX_COPIES, Agent, assign_people, instance_table
+from .agents import MAX_COPIES, Agent, assign_people, expand_agents, instance_table
 from .location import Location
 from .minutes import Recorder, build as build_minutes
 from .stt import Transcriber
@@ -854,7 +854,6 @@ class Hub:
     async def open_room(self, names: list[str], loc: Location, title: str = "", rid: str = "",
                         session: str = "", state: dict | None = None) -> Room:
         """Seat the chosen agents in a new room at `loc` (connecting over SSH first if needed)."""
-        from .agents import expand_agents
         rid = rid or uuid.uuid4().hex[:6]
         if loc.remote:
             print(f"  Connecting to {loc.host} ...", flush=True)
@@ -1039,10 +1038,19 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
     @app.post("/select")
     async def select(request: Request, t: str | None = None):
         b = await lobby_body(request, t)
-        valid = {a["name"] for a in cfg["agents"]}
-        names = [n for n in b.get("agents") or [] if n in valid][:12]
-        if not names:
+        requested = b.get("agents")
+        if not isinstance(requested, list) or not requested or any(not isinstance(n, str) for n in requested):
             return JSONResponse({"error": "choose at least one participant"}, status_code=400)
+        if len(requested) > 12:
+            return JSONResponse({"error": "the room holds at most 12 participants"}, status_code=400)
+        # The picker sends individual seat handles, not just base model names.
+        valid = {a["name"].lower() for a in instance_table(cfg["agents"])}
+        names = [n.strip().lower() for n in requested]
+        if any(n not in valid for n in names):
+            return JSONResponse({"error": "unknown participant seat; refresh the picker and try again"}, status_code=400)
+        # Preserve legacy repeated base handles, but enforce the same per-type cap as the picker.
+        if any(a["name"].lower() not in valid for a in expand_agents(cfg["agents"], names)):
+            return JSONResponse({"error": f"at most {MAX_COPIES} seats per agent type"}, status_code=400)
         loc = Location.from_dict(b.get("location"))
         if err := await asyncio.to_thread(loc.validate):
             return JSONResponse({"error": err}, status_code=400)
