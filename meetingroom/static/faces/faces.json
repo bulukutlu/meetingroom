@@ -40,5 +40,54 @@
   "skin": "#cb937a",
   "hair": "#4a2e20",
   "long": false
+ },
+ {
+  "file": "face_7.png",
+  "source": "random-person_7.jpeg",
+  "skin": "#c59d91",
+  "hair": "#766a5e",
+  "long": true
+ },
+ {
+  "file": "face_8.png",
+  "source": "random-person_8.jpeg",
+  "skin": "#c7897c",
+  "hair": "#3a2b26",
+  "long": false
+ },
+ {
+  "file": "face_9.png",
+  "source": "random-person_9.jpeg",
+  "skin": "#ebac9d",
+  "hair": "#1d140f",
+  "long": false
+ },
+ {
+  "file": "face_10.png",
+  "source": "random-person_10.jpeg",
+  "skin": "#d5b2ae",
+  "hair": "#6c5044",
+  "long": true
+ },
+ {
+  "file": "face_11.png",
+  "source": "random-person_11.jpeg",
+  "skin": "#cd9f92",
+  "hair": "#403f3d",
+  "long": false
+ },
+ {
+  "file": "face_12.png",
+  "source": "random-person_12.jpeg",
+  "skin": "#d3af9f",
+  "hair": "#6c5b51",
+  "long": true
+ },
+ {
+  "file": "face_13.png",
+  "source": "random-person_13.jpeg",
+  "skin": "#efc6c0",
+  "hair": "#895a48",
+  "long": true
  }
 ]

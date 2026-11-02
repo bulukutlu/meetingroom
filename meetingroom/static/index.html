@@ -75,6 +75,8 @@ header>.meta{flex-shrink:1}
 #amenu .h{display:flex;align-items:center;gap:8px;font-size:13.5px;margin-bottom:2px}
 #amenu .h i{width:10px;height:10px;flex:none}
 #amenu .h .x{margin-left:auto;padding:0 6px;border:0;background:none;color:var(--muted)}
+#amenu .row{display:flex;align-items:center;gap:6px;margin-top:4px}
+#amenu button.danger{color:#ffd0c8;background:#5a2620}
 #amenu small{display:block;color:var(--dim);font-size:11px;margin-bottom:8px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #amenu .row{display:flex;align-items:center;gap:8px;margin-top:6px}
 #amenu .row label{color:var(--muted);width:62px}
@@ -83,6 +85,24 @@ header>.meta{flex-shrink:1}
 #overlay{position:absolute;left:0;top:0;width:800px;height:600px;transform-origin:0 0;background:#0b130b;overflow:hidden;display:none;will-change:transform}
 #overlay img{width:100%;height:100%;object-fit:contain;display:block}
 #overlay iframe{width:100%;height:100%;border:0;background:#fff;display:block}
+/* Classic desktop window, with crisp bevels and code-drawn pixel icons. */
+.file-explorer{box-sizing:border-box;height:100%;display:flex;flex-direction:column;overflow:hidden;background:#c0c0c0;color:#000;padding:3px;border:2px solid;border-color:#fff #000 #000 #fff;font:13px/1.3 Tahoma,"MS Sans Serif",Arial,sans-serif;box-shadow:inset -1px -1px #808080,inset 1px 1px #dfdfdf}
+.file-titlebar{display:flex;align-items:center;gap:5px;flex:none;padding:3px 5px;background:#000080;color:#fff;min-height:24px}
+.file-titlebar h2{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 13px Tahoma,Arial,sans-serif}.file-titlebar svg{width:18px;height:18px;flex:none}
+.file-address{display:flex;align-items:center;gap:8px;padding:7px 4px;flex:none;border-bottom:1px solid #808080;box-shadow:0 1px #fff}
+.file-address .file-path{display:flex;align-items:center;gap:6px;min-width:0;flex:1;background:#fff;padding:3px 5px;border:2px solid;border-color:#808080 #fff #fff #808080;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.file-path svg{width:16px;height:16px;flex:none}
+.file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));align-content:start;gap:10px 6px;flex:1;min-height:0;overflow:auto;margin:5px 2px;padding:16px 10px;background:#fff;border:2px solid;border-color:#808080 #fff #fff #808080}
+.file-grid button{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;align-self:start;gap:6px;min-width:0;padding:8px 2px;background:transparent;border:1px solid transparent;border-radius:0;box-shadow:none;color:#000;font:13px/1.3 Tahoma,"MS Sans Serif",Arial,sans-serif;cursor:pointer}
+.file-grid button:hover{background:#ededed;color:#000}.file-grid button:focus{outline:0;background:transparent}.file-grid button:focus .file-name{background:#000080;color:#fff;outline:1px dotted #fff;outline-offset:-1px}
+.file-grid .file-name{padding:2px 4px;max-width:100%;overflow-wrap:anywhere;text-align:center}.file-icon{display:block;width:32px;height:32px}.file-icon svg{display:block;width:32px;height:32px;image-rendering:pixelated}
+.file-status{display:flex;justify-content:space-between;gap:12px;padding:4px 7px;flex:none;border:1px solid;border-color:#808080 #fff #fff #808080;color:#222;font-size:12px}
+.notepad{box-sizing:border-box;height:100%;display:flex;flex-direction:column;padding:3px;background:#c0c0c0;border:2px solid;border-color:#fff #000 #000 #fff;color:#000;font:13px Tahoma,Arial,sans-serif}
+.notepad-body{position:relative;flex:1;min-height:0;overflow:hidden;margin-top:3px;background:#fff;border:2px solid;border-color:#808080 #fff #fff #808080}
+#overlay .notepad pre,#modal .mc .notepad pre{position:static;inset:auto;margin:0;padding:16px;background:#fff;color:#000;overflow:auto;font:15px/1.5 "Courier New",monospace;white-space:pre;box-sizing:border-box}
+#overlay .notepad-body>pre,#modal .mc .notepad-body>pre{height:100%}
+#overlay .notepad .doc,#modal .mc .notepad .doc{position:static;inset:auto;height:100%;background:#fff;color:#000}
+.notepad .doc code,.notepad .doc th{background:#eee}.notepad .doc th,.notepad .doc td{border-color:#aaa}.notepad .doc blockquote{border-color:#808080;color:#333}
+#modal .mc .notepad .surf pre,#modal .mc .notepad .surf .doc{height:auto;overflow:visible;background:#fff;color:#000}
 #overlay pre{margin:0;padding:20px;height:100%;overflow:auto;font:15px/1.5 var(--mono);color:#cfe9c8;white-space:pre}
 .screenbar{position:absolute;top:10px;right:10px;display:none;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;
   background:#0e0a07dd;border:2px solid #000;padding:5px 6px 5px 10px;max-width:60%}
@@ -123,8 +143,10 @@ header>.meta{flex-shrink:1}
 #side{display:flex;flex-direction:column;min-height:0;border-left:3px solid #000;background:var(--panel)}
 .panel{display:flex;flex-direction:column;min-height:0;background:var(--panel)}
 .panel.grow{flex:1}
+.panel[hidden]{display:none}
 .panel + .panel{border-top:1px solid var(--line)}
-.panel.fold .people,.panel.fold .shared{display:none}
+.panel.fold .people,.panel.fold .shared,.panel.fold .log,.panel.fold .progress{display:none}
+.panel.grow.fold{flex:none}
 .panel-h{cursor:default}
 .panel-h .fold{margin-left:auto;cursor:pointer;color:var(--dim)}
 .panel-h{padding:8px 14px;border-bottom:1px solid var(--line);font:700 12px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);display:flex;gap:8px}
@@ -162,6 +184,16 @@ header>.meta{flex-shrink:1}
 .person select{padding:1px 2px;font-size:11px;border-radius:0;background:var(--panel2);color:inherit;border:1px solid var(--line2);max-width:96px}
 .chip-auto{color:var(--amber);border-color:#6b5222!important}
 .shared{padding:6px 10px 12px;display:flex;flex-direction:column;gap:3px}
+.progress{padding:8px 12px;display:flex;flex-direction:column;gap:10px}
+.pg-top{display:flex;justify-content:space-between;gap:8px;font-size:12.5px}
+.pg-top b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pg-top span{color:var(--muted);font:12px var(--mono);white-space:nowrap}
+.pg-bar{height:14px;margin:4px 0 3px;background:var(--panel2);border:1px solid var(--line);position:relative;overflow:hidden}
+.pg-bar i{display:block;height:100%;background:var(--pgc,var(--accent));transition:width .6s}
+.pg-bar.ind i{width:35%!important;animation:pgslide 1.6s linear infinite}
+@keyframes pgslide{from{margin-left:-35%}to{margin-left:100%}}
+.pg-sub{font-size:11.5px;color:var(--muted)}
+.pg-seg{display:flex;gap:2px;margin-top:3px}.pg-seg u{flex:1;height:4px;background:var(--line);text-decoration:none}.pg-seg u.on{background:var(--pgc,var(--accent))}
 .sh{display:flex;align-items:center;gap:8px;padding:5px 8px;cursor:pointer;font-size:12.5px;color:var(--muted);border:1px solid transparent}
 .sh:hover{background:var(--panel2)}
 .sh.on{border-color:var(--accent);color:var(--text)}
@@ -251,7 +283,7 @@ footer.drop{outline:2px dashed var(--amber);outline-offset:-4px}
   <label class="toggle" title="Send voice when I stop talking"><input type="checkbox" id="autosend"> Auto-send</label>
   <button class="ghost" id="skipvoice" title="Stop the voice reading aloud now (agents keep working). Key: S">Skip</button>
   <button class="ghost" id="stopall" title="Stop every agent">Stop all</button>
-  <button class="ghost" id="endmeeting" title="End the meeting and shut the room down (or click the door in the room)">Exit &#128682;</button>
+  <button class="ghost" id="endmeeting" title="Close this room or quit the app">Exit &#128682;</button>
   <div class="conn" id="conn"><i></i><span>connecting</span></div>
 </header>
 
@@ -262,6 +294,7 @@ footer.drop{outline:2px dashed var(--amber);outline-offset:-4px}
   <div id="labels"></div>
   <div class="screenbar" id="screenbar">
     <span class="t" id="sbTitle"></span><span class="by" id="sbBy"></span>
+    <button id="sbFolder" style="display:none">← Folder</button>
     <button id="sbFocus" title="Toggle between close-up of the monitor and the whole room">Room view</button>
     <button id="sbMark" title="Point at part of this: select text or drag a box, then say or type what you want. The mark goes with your next message (key: M)">✎ Mark</button>
     <button id="sbFull" title="Open full size">Full size</button>
@@ -272,13 +305,17 @@ footer.drop{outline:2px dashed var(--amber);outline-offset:-4px}
   <div class="loading" id="loading">loading room…</div>
 </section>
 <aside id="side">
-  <div class="panel grow">
-    <div class="panel-h">Transcript <span id="count"></span></div>
+  <div class="panel grow" id="pLog">
+    <div class="panel-h">Transcript <span id="count"></span><span class="fold" data-fold="pLog">–</span></div>
     <div class="log" id="log"></div>
   </div>
   <div class="panel" id="pPeople">
     <div class="panel-h">Participants <span class="fold" data-fold="pPeople">–</span></div>
     <div class="people" id="people"></div>
+  </div>
+  <div class="panel" id="pProgress" hidden>
+    <div class="panel-h">Progress <span class="fold" data-fold="pProgress">–</span></div>
+    <div class="progress" id="progress"></div>
   </div>
   <div class="panel" id="pShared">
     <div class="panel-h">On screen <span class="fold" data-fold="pShared">–</span></div>
@@ -307,6 +344,7 @@ footer.drop{outline:2px dashed var(--amber);outline-offset:-4px}
 
 <script type="module">
 import { createRoom } from "/static/room3d.js";
+import { TranscriptAgreement } from "/static/live-dictation.js";
 
 // --- token: read once, keep in this tab only, scrub from the address bar
 const qs = new URLSearchParams(location.search);
@@ -315,17 +353,26 @@ const BASE = location.pathname.replace(/\/+$/, "");   // this room's path on the
 const TOKEN = sessionStorage.getItem("mr_t") || "";
 
 const $ = id => document.getElementById(id);
+const PROG = new Map();
 const S = { user: "You", agents: [], messages: [], shared: [], approvals: new Map(), current: null, speaking: null };
 let ws, retry = 0, room = null;
 for (const id of ["tts", "sounds", "autosend"]) {
   try { const v = localStorage.getItem("mr_" + id); if (v !== null) $(id).checked = v === "1"; } catch (e) {}
   $(id).addEventListener("change", () => { try { localStorage.setItem("mr_" + id, $(id).checked ? "1" : "0"); } catch (e) {} });
 }
-document.addEventListener("click", e => { const f = e.target.closest("[data-fold]"); if (f) { const p = $(f.dataset.fold); p.classList.toggle("fold"); f.textContent = p.classList.contains("fold") ? "+" : "–"; } });
+// side-panel layout (folded or not) is remembered across rooms and sessions
+const FOLDS_KEY = "mr_folds";
+const loadFolds = () => { try { return JSON.parse(localStorage.getItem(FOLDS_KEY)) || {}; } catch (e) { return {}; } };
+function setFold(id, on) { const p = $(id); if (!p) return; p.classList.toggle("fold", on); const f = p.querySelector("[data-fold]"); if (f) f.textContent = on ? "+" : "–"; }
+{ const saved = loadFolds(); for (const id of ["pLog", "pPeople", "pProgress", "pShared"]) if (id in saved) setFold(id, !!saved[id]); }
+document.addEventListener("click", e => { const f = e.target.closest("[data-fold]"); if (f) {
+  const p = $(f.dataset.fold); setFold(f.dataset.fold, !p.classList.contains("fold"));
+  try { localStorage.setItem(FOLDS_KEY, JSON.stringify({ ...loadFolds(), [f.dataset.fold]: p.classList.contains("fold") })); } catch (err) {}
+} });
 
 try {
   room = createRoom({ wrap: $("game"), canvas: $("cv"), labels: $("labels"), overlay: $("overlay"),
-    onPick: p => p && p.kind === "door" ? endMeeting() : p && p.kind === "agent" ? openAgentMenu(p.name, p.x, p.y) : closeAgentMenu(),
+    onPick: p => p && p.kind === "door" ? goToCorridor() : p && p.kind === "agent" ? openAgentMenu(p.name, p.x, p.y) : p && p.kind === "seat" ? openSeatMenu(p.x, p.y) : closeAgentMenu(),
     onFocusChange: () => { closeAgentMenu(); syncFocusBtn(); } });
   $("loading").remove();
 } catch (e) { $("loading").textContent = "3D view unavailable: " + e.message; }
@@ -334,7 +381,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
 const personOf = h => (S.agents.find(a => a.name === h) || {}).person || h;
 const colorOf = name => (S.agents.find(a => a.name === name) || {}).color || (name === S.user ? "#e8dcc4" : "#76664f");
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const fileUrl = id => `${BASE}/files/${id}?t=${encodeURIComponent(TOKEN)}`;
+const fileUrl = id => `${BASE}/files/${id}?f=${encodeURIComponent((S.shared.find(s => s.id === id) || {}).file_token || "")}`;
 const plain = t => String(t).replace(/```[\s\S]*?```/g, "[code]").replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
 
 function md(src) {
@@ -485,13 +532,14 @@ $("tts").addEventListener("change", sendPrefs);
 function handle(ev) {
   switch (ev.type) {
     case "snapshot":
-      S.user = ev.user; S.agents = ev.agents; S.messages = ev.messages; S.shared = ev.shared;
+      S.catalog = ev.catalog || []; S.maxCopies = ev.max_copies || 4; S.user = ev.user; S.agents = ev.agents; S.messages = ev.messages; S.shared = ev.shared;
       S.approvals = new Map(ev.approvals.map(a => [a.id, a]));
       S.quota = ev.quota; renderQuota();
       { const L = ev.location || {};
         $("meta").textContent = `session ${ev.session} · ` + (L.kind === "ssh" ? `⇄ ssh ${L.label}` : L.kind === "local" ? `▸ ${L.label}` : ev.workspace);
         $("meta").title = L.kind === "ssh" ? `Claude Code / Codex agents run on ${L.host} in ${L.path}` : L.kind === "local" ? `Project folder: ${L.path}` : "Each agent works in its own folder"; }
       S.stt = ev.stt; renderVoice(); S.tts = ev.tts; renderTts(); loadAcks();
+      PROG.clear(); (ev.progress || []).forEach(p => PROG.set(p.id, p)); renderProgress();
       renderPeople(); renderLog(); renderShared(); renderApprovals(); updateReplyHint();
       if (S.shared.length) show(S.shared[S.shared.length - 1].id, false);
       break;
@@ -515,7 +563,15 @@ function handle(ev) {
       }
       break;
     }
-    case "shared": S.shared.push(ev.item); renderShared(); show(ev.item.id, true); break;
+    case "roster":
+      S.agents = ev.agents; if (ev.tts) { S.tts = ev.tts; renderTts(); loadAcks(); }
+      renderPeople(); room && room.setAgents(S.agents); updateReplyHint();
+      if (AM.name && !S.agents.some(a => a.name === AM.name)) closeAgentMenu();
+      break;
+    case "notice": alert(ev.text); break;
+    case "progress": PROG.set(ev.item.id, ev.item); renderProgress(); break;
+    case "progress_done": PROG.delete(ev.id); renderProgress(); break;
+    case "shared": S.shared.push(...(ev.item.children || []), ev.item); renderShared(); show(ev.item.id, true); break;
     case "approval": { const isNew = !S.approvals.has(ev.approval.id); S.approvals.set(ev.approval.id, ev.approval); renderApprovals();
       if (isNew) askPermission(ev.approval.agent); break; }
     case "approval_done": S.approvals.delete(ev.id); renderApprovals(); break;
@@ -569,13 +625,17 @@ function renderPeople() {
       <div class="nm"><b data-m="${esc(a.name)}" title="Address ${esc(a.person)} (@${esc(a.name)})">${esc(a.person)} <em style="font-weight:400;font-style:normal;opacity:.55">@${esc(a.name)}</em></b><small title="${esc(sub)}">${esc(sub)}</small></div>
       ${(a.efforts || []).length ? `<select data-effort="${esc(a.name)}" class="${a.effort && a.effort !== "medium" ? "chip-auto" : ""}" title="Reasoning effort (applies from its next turn)">
         ${a.efforts.map(l => `<option value="${esc(l)}" ${a.effort === l ? "selected" : ""}>effort: ${esc(l)}</option>`).join("")}</select>` : ""}
+      <button data-leader="${esc(a.name)}" class="${a.supervisor ? "chip-auto" : ""}" aria-label="${a.supervisor ? "Remove group leader" : "Make group leader"}" aria-pressed="${!!a.supervisor}" title="${a.supervisor ? "Group leader (longer back-and-forth chains). Click to remove." : "Make group leader: gets a cap and may run longer chains."}">${a.supervisor ? "★" : "☆"}</button>
       <button data-stop="${esc(a.name)}" ${busy ? "" : "disabled"}>Stop</button>
+      <button data-remove="${esc(a.name)}" title="Remove ${esc(a.person)} from this room">✕</button>
       <button data-mode="${esc(a.name)}" class="${a.approval === "auto" ? "chip-auto" : ""}"
         title="${a.approval === "auto" ? "Runs without asking. Click to require approval." : "Asks before running commands. Click to let it run freely."}">${a.approval === "auto" ? "Auto-run" : "Ask first"}</button></div>`;
   }).join("");
 }
 $("people").addEventListener("click", e => {
-  const t = e.target.closest("[data-m],[data-stop],[data-mode]"); if (!t) return;
+  const t = e.target.closest("[data-m],[data-stop],[data-mode],[data-leader],[data-remove]"); if (!t) return;
+  if (t.dataset.remove) { removeAgent(t.dataset.remove); return; }
+  if (t.dataset.leader) { const a = S.agents.find(x => x.name === t.dataset.leader); if (a) send({ type: "set_leader", agent: a.name, leader: !a.supervisor }); return; }
   if (t.dataset.m) insertMention(t.dataset.m);
   if (t.dataset.stop) send({ type: "stop", agent: t.dataset.stop });
   if (t.dataset.mode) {
@@ -590,6 +650,26 @@ $("people").addEventListener("change", e => {
 });
 // ---------------- click-an-agent menu in the 3D room (same controls as the side panel)
 const AM = { name: null };
+function removeAgent(name) {
+  const a = S.agents.find(x => x.name === name); if (!a) return;
+  if (S.agents.length <= 1) { alert("The last agent cannot leave."); return; }
+  if (confirm(`Remove ${a.person} (@${a.name}) from this room?` + (a.status === "thinking" || a.status === "working" ? " Their current task will be stopped." : ""))) send({ type: "remove_agent", agent: name });
+}
+// click the chair in front of the PC: seat another agent
+function seatMenuHtml() {
+  const left = c => S.maxCopies - S.agents.filter(a => a.name === c.name || (a.name.startsWith(c.name + "-") && /^\d+$/.test(a.name.slice(c.name.length + 1)))).length;
+  const full = S.agents.length >= 12;
+  return `<div class="h"><b>Add an agent</b><button class="x" data-am="close" title="Close (Esc)">✕</button></div>
+    <small>${full ? "The room is full (12 seats)." : "Pick a type to seat next to the others."}</small>
+    ${(S.catalog || []).map(c => `<div class="row"><i style="background:${esc(c.color)};width:10px;height:10px;flex:none"></i>
+      <button data-add="${esc(c.name)}" ${full || left(c) <= 0 ? "disabled" : ""} title="${esc(c.role || "")}">${esc(c.name)} · ${esc(c.model || c.provider)}</button></div>`).join("")}`;
+}
+function openSeatMenu(x, y) {
+  AM.name = null; const m = $("amenu"); m.innerHTML = seatMenuHtml(); m.style.display = "block";
+  const r = $("game").getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(r.width - m.offsetWidth - 6, x - r.left + 12)) + "px";
+  m.style.top = Math.max(6, Math.min(r.height - m.offsetHeight - 6, y - r.top + 12)) + "px";
+}
 function agentMenuHtml(a) {
   const busy = a.status === "thinking" || a.status === "working" || a.status === "waiting";
   const u = a.usage || {};
@@ -602,7 +682,9 @@ function agentMenuHtml(a) {
       ${a.efforts.map(l => `<option value="${esc(l)}" ${a.effort === l ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>` : ""}
     <div class="row"><label>Commands</label><button data-am="mode" class="${a.approval === "auto" ? "chip-auto" : ""}"
       title="${a.approval === "auto" ? "Runs without asking. Click to require approval." : "Asks before running commands. Click to let it run freely."}">${a.approval === "auto" ? "Auto-run" : "Ask first"}</button></div>
-    <div class="row"><label></label><button data-am="stop" ${busy ? "" : "disabled"}>Stop</button></div>`;
+    <div class="row"><label>Role</label><button data-am="leader" class="${a.supervisor ? "chip-auto" : ""}">${a.supervisor ? "★ Group leader" : "☆ Make group leader"}</button></div>
+    <div class="row"><label></label><button data-am="stop" ${busy ? "" : "disabled"}>Stop</button>
+      <button data-am="remove" class="danger" title="Remove from this room">Remove from room</button></div>`;
 }
 function renderAgentMenu() {
   const m = $("amenu"), a = S.agents.find(x => x.name === AM.name);
@@ -616,14 +698,19 @@ function openAgentMenu(name, x, y) {
   m.style.left = Math.max(6, Math.min(r.width - m.offsetWidth - 6, x - r.left + 12)) + "px";
   m.style.top = Math.max(6, Math.min(r.height - m.offsetHeight - 6, y - r.top + 12)) + "px";
 }
-function closeAgentMenu() { AM.name = null; $("amenu").style.display = "none"; }
+function closeAgentMenu() { AM.name = null; $("amenu").innerHTML = ""; $("amenu").style.display = "none"; }
 $("amenu").addEventListener("click", e => {
+  const ad = e.target.closest("[data-add]");
+  if (ad) { send({ type: "add_agent", model: ad.dataset.add }); closeAgentMenu(); return; }
   const t = e.target.closest("[data-am]"); if (!t || t.tagName === "SELECT") return;
+  if (t.dataset.am === "close") { closeAgentMenu(); return; }
   const a = S.agents.find(x => x.name === AM.name); if (!a) return;
   const k = t.dataset.am;
   if (k === "close") closeAgentMenu();
   if (k === "mention") { insertMention(a.name); closeAgentMenu(); }
+  if (k === "leader") send({ type: "set_leader", agent: a.name, leader: !a.supervisor });
   if (k === "stop") send({ type: "stop", agent: a.name });
+  if (k === "remove") { removeAgent(a.name); closeAgentMenu(); }
   if (k === "mode") send({ type: "set_approval", agent: a.name, mode: a.approval === "auto" ? "ask" : "auto" });
 });
 $("amenu").addEventListener("change", e => {
@@ -631,12 +718,16 @@ $("amenu").addEventListener("change", e => {
   e.target.blur();
 });
 document.addEventListener("pointerdown", e => {
-  if (AM.name && !e.target.closest("#amenu") && e.target.id !== "cv" && !e.target.closest(".lbl")) closeAgentMenu();
+  if ($("amenu").style.display === "block" && !e.target.closest("#amenu") && e.target.id !== "cv" && !e.target.closest(".lbl")) closeAgentMenu();
 });
 
 $("skipvoice").onclick = () => stopSpeech();
 let ended = false;
 const LOBBY = () => "/?t=" + encodeURIComponent(TOKEN);
+function goToCorridor() {
+  stopSpeech();
+  location.href = LOBBY();
+}
 function endMeeting() {
   if (ended || $("exitdlg")) return;
   const btn = "padding:10px 16px;border:2px solid #000;border-radius:6px;font:600 14px system-ui;cursor:pointer";
@@ -658,7 +749,7 @@ function endMeeting() {
   d.onclick = e => {
     const k = (e.target.closest("[data-x]") || {}).dataset?.x;
     if (e.target === d || k === "cancel") return close();
-    if (k === "lobby") { stopSpeech && stopSpeech(); location.href = LOBBY(); return; }
+    if (k === "lobby") { goToCorridor(); return; }
     if (k === "quit" && !confirm("Close every room and quit the app?")) return;
     if (k === "quit" || k === "close") { const save=d.querySelector('#saveMeeting').checked; close(); ended = true; send({ type: k === "close" ? "close_room" : "quit", save }); }
   };
@@ -710,33 +801,75 @@ $("approvals").addEventListener("click", e => {
   const b = e.target.closest("[data-ap]"); if (b) send({ type: "approve", id: b.dataset.ap, decision: b.dataset.d });
 });
 
+// ---------------- progress bars of long tasks
+function renderProgress() {
+  $("pProgress").hidden = !PROG.size;
+  $("progress").innerHTML = [...PROG.values()].map(p => {
+    const pct = p.percent == null ? null : Math.round(p.percent);
+    const elapsed = Math.max(0, (Date.now() / 1000 - p.started) / 60);
+    const nm = (S.agents.find(a => a.name === p.agent) || {}).person || p.agent;
+    const seg = p.steps > 1 ? `<div class="pg-seg">${Array.from({ length: p.steps }, (_, i) => `<u class="${i < (p.step || 0) ? "on" : ""}"></u>`).join("")}</div>` : "";
+    return `<div style="--pgc:${esc(colorOf(p.agent))}"><div class="pg-top"><b title="${esc(p.task)}">${esc(p.task)}</b><span>${pct == null ? "…" : pct + "%"}</span></div>
+      <div class="pg-bar ${pct == null ? "ind" : ""}"><i style="width:${pct == null ? 0 : pct}%"></i></div>${seg}
+      <div class="pg-sub">${esc(nm)}${p.stage ? " · " + esc(p.stage) : ""}${p.steps ? ` (${p.step || 0}/${p.steps})` : ""} · ${elapsed.toFixed(0)} min in${p.eta_minutes != null ? ` · ~${Math.round(p.eta_minutes)} min left` : ""}</div></div>`;
+  }).join("");
+}
+setInterval(() => PROG.size && renderProgress(), 30000);
+
 // ---------------- shared screen: sharp content on the CRT
 function renderShared() {
   if (!S.shared.length) return;
-  $("shared").innerHTML = S.shared.slice().reverse().map(s => `<div class="sh ${s.id === S.current ? "on" : ""}" data-s="${s.id}" title="${esc(s.source)}">
-    <i style="background:${esc(colorOf(s.agent))}"></i><span>${esc(s.title)}</span></div>`).join("");
+  $("shared").innerHTML = S.shared.filter(s => !s.parent).slice().reverse().map(s => `<div class="sh ${s.id === S.current || s.id === (S.shared.find(x => x.id === S.current) || {}).parent ? "on" : ""}" data-s="${s.id}" title="${esc(s.source)}">
+    <i style="background:${esc(colorOf(s.agent))}"></i><span>${s.kind === "folder" ? "📁 " : ""}${esc(s.title)}</span></div>`).join("");
 }
 $("shared").addEventListener("click", e => { const t = e.target.closest("[data-s]"); if (t) show(t.dataset.s, true); });
+function fileIcon(kind) {
+  const page = '<path d="M6 2h14l6 6v22H6z" fill="#fff" stroke="#000"/><path d="M20 2v6h6" fill="#c0c0c0" stroke="#000"/>';
+  const art = {
+    folder: '<path d="M2 8V5h11l3 3h14v20H2z" fill="#b58900" stroke="#000"/><path d="M2 11h28l-3 17H2z" fill="#ffdf70" stroke="#000"/><path d="M3 12h25" stroke="#fff2bd"/>',
+    image: page + '<path d="M9 12h14v13H9z" fill="#80c8e8" stroke="#000"/><path d="m10 24 5-7 3 4 2-2 3 5" fill="#008040"/><path d="M19 14h3v3h-3z" fill="#ffff00"/>',
+    html: page + '<circle cx="16" cy="19" r="9" fill="#008080" stroke="#000"/><ellipse cx="16" cy="19" rx="4" ry="9" fill="none" stroke="#80ffff"/><path d="M7 19h18M9 14h14M9 24h14" stroke="#80ffff"/>',
+    pdf: page + '<path d="M3 15h25v10H3z" fill="#800000" stroke="#000"/><text x="5" y="22" fill="#fff" font-family="monospace" font-size="8" font-weight="bold">PDF</text>',
+    text: page + '<path d="M10 12h12M10 16h12M10 20h12M10 24h8" stroke="#000080" stroke-width="2"/>',
+  };
+  return '<svg viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">' + (art[kind] || page + '<path d="M11 13h10v11H11z" fill="#808080"/>') + '</svg>';
+}
+function textWindow(s, content) {
+  return `<div class="notepad"><div class="file-titlebar">${fileIcon("text")}<h2>${esc(s.name)} - Notepad</h2></div><div class="notepad-body">${content}</div></div>`;
+}
 async function contentFor(s, big) {
+  if (s.kind === "folder") {
+    return `<div class="file-explorer"><div class="file-titlebar">${fileIcon("folder")}<h2>${esc(s.title)}</h2></div>` +
+      `<div class="file-address"><span>Address</span><span class="file-path">${fileIcon("folder")}Shared outputs / ${esc(s.title)}</span></div><div class="file-grid">` +
+      s.children.map(c => `<button data-file="${esc(c.id)}" title="Open ${esc(c.name)}"><span class="file-icon">${fileIcon(c.kind)}</span><span class="file-name">${esc(c.name)}</span></button>`).join("") +
+      `</div><div class="file-status"><span>${s.children.length} object${s.children.length === 1 ? "" : "s"}</span><span>Click an icon to open</span></div></div>`;
+  }
   const url = fileUrl(s.id);
   if (s.kind === "image") return `<img src="${url}" alt="${esc(s.title)}">`;
   if (s.kind === "html") return `<iframe sandbox="allow-scripts allow-popups allow-forms" src="${url}"></iframe>`;
   if (s.kind === "pdf") return `<iframe src="${url}"></iframe>`;
   if (s.kind === "text") {
     const t = await (await fetch(url)).text();
-    return /\.(md|markdown)$/i.test(s.name) ? `<div class="doc">${mdDoc(t)}</div>` : `<pre>${esc(t)}</pre>`;
+    return textWindow(s, /\.(md|markdown)$/i.test(s.name) ? `<div class="doc">${mdDoc(t)}</div>` : `<pre>${esc(t)}</pre>`);
   }
   return `<pre>${esc(s.name)}\n\nThis file type can't be previewed.</pre>`;
 }
 async function show(id, focus) {
   const s = S.shared.find(x => x.id === id); if (!s) return;
   S.current = id; renderShared();
-  $("screenContent").innerHTML = await contentFor(s);
+  const content = await contentFor(s);
+  if (S.current !== id) return;
+  $("screenContent").innerHTML = content;
+  $("sbFolder").style.display = s.parent ? "" : "none";
+  $("sbMark").disabled = s.kind === "folder";
   $("sbTitle").textContent = s.title; $("sbBy").textContent = `· ${s.agent}`;
   $("screenbar").style.display = "flex";
   if (room) { room.setScreen(true); if (focus) room.setFocus(true); syncFocusBtn(); }
 }
 function syncFocusBtn() { $("sbFocus").textContent = room && room.focused ? "Room view" : "Zoom to screen"; }
+$("sbFolder").onclick = () => { const s = S.shared.find(x => x.id === S.current); if (s && s.parent) show(s.parent, false); };
+$("screenContent").addEventListener("click", e => { const b = e.target.closest("[data-file]"); if (b) show(b.dataset.file, false); });
+$("mContent").addEventListener("click", e => { const b = e.target.closest("[data-file]"); if (b) openViewer(b.dataset.file, false); });
 $("sbFocus").onclick = () => { if (room) { room.setFocus(!room.focused); syncFocusBtn(); } };
 $("sbClose").onclick = () => { S.current = null; renderShared(); $("screenContent").innerHTML = ""; $("screenbar").style.display = "none"; if (room) { room.setScreen(false); room.setFocus(false); } };
 $("sbFull").onclick = () => { if (S.current) openViewer(S.current, false); };
@@ -759,6 +892,12 @@ function anchorLabel(a) {
 async function openViewer(id, marking) {
   const s = S.shared.find(x => x.id === id); if (!s) return;
   MK.item = s; $("mTitle").textContent = s.title; $("mOpen").href = fileUrl(s.id);
+  $("mOpen").style.display = s.kind === "folder" ? "none" : "";
+  $("mMark").disabled = s.kind === "folder";
+  let back = $("mFolder");
+  if (!back) { back = document.createElement("button"); back.id = "mFolder"; back.textContent = "← Folder"; $("mTitle").after(back); }
+  back.style.display = s.parent ? "" : "none";
+  back.onclick = () => openViewer(s.parent, false);
   $("modal").style.display = "block";
   MK.tool = s.kind === "text" || s.kind === "html" ? "text" : "box";
   $("mContent").innerHTML = marking || s.kind === "pdf" ? await markContent(s) : await contentFor(s, true);
@@ -767,6 +906,7 @@ async function openViewer(id, marking) {
   sizeStage(); drawMarks();
 }
 async function openMark(id, flash) {
+  if ((S.shared.find(x => x.id === id) || {}).kind === "folder") { await openViewer(id, false); return; }
   if (!MK.item || MK.item.id !== id || $("modal").style.display !== "block") await openViewer(id, true);
   else if (!MK.on) { $("mContent").innerHTML = await markContent(MK.item); MK.markable = true; setMarking(true); sizeStage(); drawMarks(); }
   if (flash) { const b = $("mContent").querySelector(`[data-mk="${flash}"]`); if (b) { b.scrollIntoView({ block: "center" }); b.classList.add("flash"); } }
@@ -792,7 +932,7 @@ async function markContent(s) {
   if (s.kind === "text") {
     const t = await (await fetch(url)).text(); MK.raw = t;
     const inner = /\.(md|markdown)$/i.test(s.name) ? `<div class="doc">${mdDoc(t)}</div>` : `<pre>${esc(t)}</pre>`;
-    return `<div class="stage"><div class="surf txt" data-surf="0">${inner}${L}</div></div>`;
+    return textWindow(s, `<div class="stage"><div class="surf txt" data-surf="0">${inner}${L}</div></div>`);
   }
   if (s.kind === "html") return `<div class="stage"><div class="surf web" data-surf="0"><iframe sandbox="allow-scripts allow-popups allow-forms" src="${url}&mark=1"></iframe>${L}</div></div>`;
   return `<pre>${esc(s.name)}\n\nThis file type can't be marked.</pre>`;
@@ -972,6 +1112,7 @@ foot.addEventListener("dragleave", () => foot.classList.remove("drop"));
 foot.addEventListener("drop", e => { foot.classList.remove("drop"); if (e.dataTransfer?.files?.length) { e.preventDefault(); attachFiles([...e.dataTransfer.files]); } });
 box.addEventListener("paste", e => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); attachFiles(fs); } });
 function submit() {
+  if (W.stream || W.busy || W.starting) return;
   const t = box.value.trim(), ids = MK.pending.map(a => a.id), atts = ATT.list.map(a => a.id); if (!t && !ids.length && !atts.length) return;
   if (ATT.busy) return;
   send({ type: "say", text: t, anchors: ids, attachments: atts }); box.value = ""; autosize(); hideSug();
@@ -1042,50 +1183,101 @@ setInterval(() => { if (!$("gate").classList.contains("hide")) renderGate(); }, 
 function renderVoice() {
   renderGate();
   const v = $("voice"), st = S.stt || {};
-  if (st.status === "ready") { v.textContent = "Whisper"; v.className = "vchip ok"; v.title = `${st.engine} · ${st.model} · audio stays on this computer`; }
+  if (st.status === "ready") { v.textContent = st.live ? "Whisper · live" : "Whisper"; v.className = "vchip ok"; v.title = `${st.engine} · ${st.model} · audio stays on this computer`; }
   else if (st.status === "loading") { v.textContent = "Whisper…"; v.className = "vchip wait"; v.title = "First start downloads the model once. Browser speech is used meanwhile."; }
   else { v.textContent = "Browser voice"; v.className = "vchip"; v.title = st.detail || "Browser speech recognition (Chrome/Edge send audio to their speech service)."; }
 }
-// Push-to-talk: record while Space (or the mic button) is held, then transcribe
-// the whole recording at once on this computer. Audio is captured at 16 kHz so
-// nothing needs resampling, and the server trims silence before decoding.
-const SRATE = 16000;
-const W = { stream: null, ctx: null, buf: new Float32Array(SRATE * 30), len: 0, timer: null, t0: 0, busy: false, starting: null };
+// Decode growing, overlapping context while speaking, with one request in flight.
+// Release triggers one authoritative full-recording pass; partial text is never sent.
+const SRATE = 16000, MAX_DICTATION = SRATE * 180;
+const W = { stream: null, ctx: null, buf: new Float32Array(SRATE * 30), len: 0, timer: null,
+  t0: 0, busy: false, starting: null, generation: 0, preview: null, previewAt: 0, agreement: null, liveFailed: false, original: "" };
 const WORKLET = `class R extends AudioWorkletProcessor{process(i){const c=i[0]&&i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor('rec',R)`;
 function wAppend(c) {
-  if (W.len + c.length > W.buf.length) { const nb = new Float32Array(W.buf.length * 2); nb.set(W.buf.subarray(0, W.len)); W.buf = nb; }
-  W.buf.set(c, W.len); W.len += c.length;
+  const take = Math.min(c.length, MAX_DICTATION - W.len);
+  if (W.len + take > W.buf.length) { const nb = new Float32Array(Math.min(MAX_DICTATION, W.buf.length * 2)); nb.set(W.buf.subarray(0, W.len)); W.buf = nb; }
+  W.buf.set(c.subarray(0, take), W.len); W.len += take;
+  if (W.len >= MAX_DICTATION && listening && !W.busy) whisperStop();
+}
+async function decodeRecording(pcm) {
+  const r = await fetch(`${BASE}/stt?t=${encodeURIComponent(TOKEN)}`, {
+    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: pcm.buffer,
+    signal: AbortSignal.timeout(120000) });
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || `Transcription failed (${r.status})`);
+  return j.text || "";
+}
+function previewDictation() {
+  if (!listening || W.busy || W.preview || W.liveFailed || !S.stt.live || W.len < SRATE * 1.5 || W.len - W.previewAt < SRATE * 0.8) return;
+  const generation = W.generation;
+  W.previewAt = W.len;
+  W.preview = decodeRecording(W.buf.slice(0, W.len)).then(text => {
+    if (generation !== W.generation || !listening) return;
+    const draft = W.agreement.update(text);
+    const words = [draft.confirmed, draft.tentative].filter(Boolean).join(" ");
+    box.value = base + spokenToMentions(words);
+    autosize(); updateReplyHint(); box.scrollTop = box.scrollHeight;
+  }).catch(() => { if (generation === W.generation) W.liveFailed = true; })
+    .finally(() => { if (generation === W.generation) W.preview = null; });
 }
 async function whisperStart() {
-  W.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  W.ctx = new AudioContext({ sampleRate: SRATE });
-  W.len = 0;
-  await W.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
-  const src = W.ctx.createMediaStreamSource(W.stream), node = new AudioWorkletNode(W.ctx, "rec");
-  node.port.onmessage = e => wAppend(e.data);
-  const mute = W.ctx.createGain(); mute.gain.value = 0;
-  src.connect(node); node.connect(mute); mute.connect(W.ctx.destination);
-  listening = true; $("mic").classList.add("live"); W.t0 = Date.now();
-  base = box.value ? box.value.trimEnd() + " " : "";
-  const tick = () => box.placeholder = `● Listening ${Math.round((Date.now() - W.t0) / 1000)}s · release to transcribe · Esc to cancel`;
-  tick(); W.timer = setInterval(tick, 500);
+  try {
+    W.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    W.ctx = new AudioContext({ sampleRate: SRATE });
+    if (W.ctx.sampleRate !== SRATE) throw new Error("This browser does not support 16 kHz microphone capture");
+    await W.ctx.resume();
+    W.len = 0; W.previewAt = 0; W.generation++; W.preview = null; W.liveFailed = false;
+    W.agreement = new TranscriptAgreement();
+    const workletURL = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+    try { await W.ctx.audioWorklet.addModule(workletURL); } finally { URL.revokeObjectURL(workletURL); }
+    const src = W.ctx.createMediaStreamSource(W.stream), node = new AudioWorkletNode(W.ctx, "rec");
+    node.port.onmessage = e => wAppend(e.data);
+    const mute = W.ctx.createGain(); mute.gain.value = 0;
+    src.connect(node); node.connect(mute); mute.connect(W.ctx.destination);
+    listening = true; $("mic").classList.add("live"); W.t0 = Date.now();
+    W.original = box.value;
+    base = box.value ? box.value.trimEnd() + " " : "";
+    box.readOnly = true;
+    const tick = () => {
+      box.placeholder = `● Listening ${Math.round((Date.now() - W.t0) / 1000)}s · ${W.liveFailed ? "preview unavailable; recording continues" : "release to finish"} · Esc to cancel`;
+      previewDictation();
+    };
+    tick(); W.timer = setInterval(tick, 1200);
+  } catch (e) {
+    if (W.stream) W.stream.getTracks().forEach(t => t.stop());
+    W.stream = null;
+    if (W.ctx) await W.ctx.close().catch(() => {});
+    W.ctx = null; box.readOnly = false;
+    throw e;
+  }
 }
 async function whisperStop(cancel = false) {
+  if (W.busy || !W.stream) return;
+  W.busy = true; W.generation++;
   clearInterval(W.timer); listening = false; $("mic").classList.remove("live");
+  $("mic").classList.add("busy");
   W.stream.getTracks().forEach(t => t.stop()); W.stream = null;
-  await new Promise(r => setTimeout(r, 120));              // let the last audio frames arrive
-  await W.ctx.close();
-  box.placeholder = PLACEHOLDER;
-  if (cancel || W.len < SRATE * 0.3) return;
-  const pcm = W.buf.slice(0, W.len);
-  W.busy = true; $("mic").classList.add("busy"); box.placeholder = "Transcribing on this computer…";
+  let sendAfter = false;
   try {
-    const r = await fetch(`${BASE}/stt?t=${encodeURIComponent(TOKEN)}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: pcm.buffer });
-    const j = await r.json();
-    if (j.error) throw new Error(j.error);
-    if (j.text) { box.value = base + spokenToMentions(j.text); autosize(); updateReplyHint(); if ($("autosend").checked) submit(); }
-  } catch (e) { box.placeholder = "Transcription failed: " + e.message; setTimeout(() => box.placeholder = PLACEHOLDER, 4000); }
-  finally { W.busy = false; $("mic").classList.remove("busy"); if (box.placeholder.startsWith("Transcribing")) box.placeholder = PLACEHOLDER; box.focus(); }
+    await new Promise(r => setTimeout(r, 120)); // drain the final worklet frames
+    await W.ctx.close(); W.ctx = null;
+    if (cancel || W.len < SRATE * 0.3) { box.value = W.original; autosize(); updateReplyHint(); return; }
+    box.placeholder = "Finishing transcription on this computer…";
+    // Finish an already-running preview before the final decode: no model queue backlog.
+    if (W.preview) await W.preview;
+    const text = await decodeRecording(W.buf.slice(0, W.len));
+    if (text) { box.value = base + spokenToMentions(text); autosize(); updateReplyHint(); sendAfter = $("autosend").checked; }
+    else { box.value = W.original; autosize(); updateReplyHint(); }
+  } catch (e) {
+    box.placeholder = "Transcription failed: " + e.message;
+    setTimeout(() => { if (!listening && !W.busy) box.placeholder = PLACEHOLDER; }, 4000);
+  } finally {
+    W.preview = null; W.busy = false; box.readOnly = false;
+    $("mic").classList.remove("busy");
+    if (!box.placeholder.startsWith("Transcription failed")) box.placeholder = PLACEHOLDER;
+    box.focus();
+    if (sendAfter) submit();
+  }
 }
 function spokenToMentions(t) {
   let s = t.trim();
@@ -1098,7 +1290,7 @@ function spokenToMentions(t) {
   return s.replace(/^(hey |ok )?(everyone|everybody|all)\b[,:]?\s*/i, "@all ");
 }
 function toggleMic() {
-  if (W.busy) return;
+  if (W.busy || W.starting) return;
   if (W.stream && listening) { whisperStop(); return; }
   if (rec && listening) { rec.stop(); return; }
   if (whisperReady()) { W.starting = whisperStart().catch(e => { listening = false; alert("Microphone not available: " + e.message); }).finally(() => { W.starting = null; }); return; }
@@ -1191,9 +1383,10 @@ function stopSpeech() {
   if (S.speaking) setSpeaking(null);
 }
 const AGENT_VOL = (() => { try { const v = parseFloat(localStorage.getItem("mr_agentvol")); return v >= 0 && v <= 1 ? v : 0.55; } catch (e) { return 0.55; } })();   // agent-to-agent speech is quieter than speech addressed to the user
+const speechRate = () => { try { const v = parseFloat(localStorage.getItem("mr_speechrate")); return v >= 0.5 && v <= 2.5 ? v : 1; } catch (e) { return 1; } };   // corridor setting, read at play time
 const volFor = m => (m && m.to && m.to.length ? AGENT_VOL : 1);
 const playBlob = (b, vol = 1) => new Promise(res => {
-  const a = new Audio(URL.createObjectURL(b)); NQ.audio = a; a.volume = vol;
+  const a = new Audio(URL.createObjectURL(b)); NQ.audio = a; a.volume = vol; a.preservesPitch = true; a.playbackRate = speechRate();
   a.onended = a.onerror = () => { URL.revokeObjectURL(a.src); res(); };
   a.play().catch(res);
 });
@@ -1227,7 +1420,7 @@ function browserSpeak(m, done) {
   const u = new SpeechSynthesisUtterance(plain(m.text));
   const i = S.agents.findIndex(a => a.name === m.from);
   if (voices.length) u.voice = voices[Math.max(0, i) % voices.length];
-  u.volume = volFor(m); u.onend = u.onerror = done;
+  u.volume = volFor(m); u.rate = speechRate(); u.onend = u.onerror = done;
   speechSynthesis.speak(u);
 }
 

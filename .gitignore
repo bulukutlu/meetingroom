@@ -6,4 +6,11 @@ __pycache__/
 meetings/
 *.jsonl
 .DS_Store
+.app-runtime.json
+.app-launcher.log
+.launcher-*
+/Meeting Room.app/
 *.pyc
+/random-person*.jpeg
+/docs/*-preview.html
+/docs/storage-usage.json

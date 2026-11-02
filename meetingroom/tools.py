@@ -76,19 +76,40 @@ TOOL_SPECS = [
         },
     },
     {
+        "name": "report_progress",
+        "description": (
+            "Show a progress bar on the meeting's shared screen for a long job (expected > 5 minutes). "
+            "Call at the start and at every stage change; call with done=true when finished."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "Short title of the long job."},
+                "stage": {"type": "string", "description": "What is happening now, a few words."},
+                "step": {"type": "integer"}, "steps": {"type": "integer", "description": "Total stages."},
+                "percent": {"type": "number", "description": "0-100; optional if step/steps given."},
+                "eta_minutes": {"type": "number", "description": "Estimated minutes remaining."},
+                "done": {"type": "boolean"},
+            },
+            "required": ["task"],
+        },
+    },
+    {
         "name": "share_to_screen",
         "description": (
             "Put a file on the meeting's shared screen so everyone sees it. Supports images "
             "(png, jpg, svg, gif, webp), self-contained HTML pages, PDFs, and text/markdown/csv. "
-            "HTML must be self-contained (inline assets or CDN links)."
+            "HTML must be self-contained (inline assets or CDN links). "
+            "Use paths instead of path to show multiple outputs together as a clickable folder."
         ),
         "schema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
+                "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
                 "title": {"type": "string", "description": "Short caption shown above it."},
             },
-            "required": ["path"],
+            "anyOf": [{"required": ["path"]}, {"required": ["paths"]}],
         },
     },
 ]
@@ -128,7 +149,9 @@ def inside(workdir: Path, path: Path) -> bool:
 def needs_approval(name: str, args: dict, workdir: Path) -> bool:
     if name in EXEC_TOOLS:
         return True
-    if name in ("read_file", "write_file", "list_dir", "share_to_screen"):
+    if name in ("read_file", "write_file", "list_dir", "share_to_screen", "report_progress"):
+        if name == "share_to_screen" and "paths" in args:
+            return any(not inside(workdir, resolve(workdir, p)) for p in args["paths"])
         return not inside(workdir, resolve(workdir, args.get("path")))
     return False
 
@@ -141,7 +164,7 @@ def describe(name: str, args: dict) -> str:
     if name == "write_file":
         c = args.get("content", "")
         return f"write {args.get('path')} ({len(c)} chars)\n\n" + c[:1500]
-    return f"{name} {args.get('path', '')}"
+    return f"{name} {args.get('paths', args.get('path', ''))}"
 
 
 def _clip(s: str) -> str:
@@ -214,6 +237,14 @@ async def execute(name: str, args: dict, workdir: Path, python: str, share_cb) -
                 rows.append(("d " if c.is_dir() else "f ") + c.name + ("" if c.is_dir() else f"  ({c.stat().st_size} B)"))
             return f"{p}\n" + "\n".join(rows)
         if name == "share_to_screen":
+            if "paths" in args:
+                paths = args["paths"]
+                if not isinstance(paths, list) or not 1 <= len(paths) <= 100 or not all(isinstance(p, str) and p.strip() for p in paths):
+                    return "error: paths must contain 1–100 file paths"
+                files = [resolve(workdir, p) for p in paths]
+                if any(not p.is_file() for p in files):
+                    return "error: every shared path must be an existing file"
+                return await share_cb(files, args.get("title") or "Outputs")
             p = resolve(workdir, args["path"])
             if not p.is_file():
                 return f"error: {p} does not exist"

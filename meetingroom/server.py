@@ -10,6 +10,8 @@ import base64
 import json
 import re
 import secrets
+import hashlib
+import hmac
 import shutil
 import time
 import uuid
@@ -18,11 +20,11 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import annotate, saved
-from .agents import Agent, assign_people
+from . import annotate, saved, storage
+from .agents import MAX_COPIES, Agent, assign_people, instance_table
 from .location import Location
 from .minutes import Recorder, build as build_minutes
 from .stt import Transcriber
@@ -31,6 +33,19 @@ from .tts import MessageAudio, Speaker, clean_for_speech, split_sentences
 STATIC = Path(__file__).parent / "static"
 MENTION = re.compile(r"@([A-Za-z0-9_\-]+)")
 LEADING_MENTIONS = re.compile(r"^\s*((?:@[A-Za-z0-9_\-]+[\s,:]*)+)")
+# A handoff group: one or more @names that open the message, a line, a bullet or a sentence.
+HANDOFF_MENTIONS = re.compile(
+    r"(?:^|(?<=[\n.!?;])|(?<=^[-*•])|(?<=\n[-*•]))[ \t]*((?:@[A-Za-z0-9_\-]+(?:[ \t]*(?:,|and|&|\+)?[ \t]*))+)",
+    re.M)
+
+
+def handoff_names(text: str) -> set[str]:
+    """Names an agent deliberately hands work to: every @name group that starts the
+    message, a line, a list item or a sentence. Mid-sentence mentions don't count."""
+    names = set()
+    for m in HANDOFF_MENTIONS.finditer(text):
+        names |= {n.lower() for n in MENTION.findall(m.group(1))}
+    return names
 MAX_HOPS = 2  # you -> agent -> handoff -> one reply back, then it stops
 # Chains involving a supervisor agent (`supervisor: true` in agents.yaml) may run
 # 3 full round trips: user -> S -> W -> S -> W -> S -> W -> S, then it stops.
@@ -99,6 +114,7 @@ class Room:
         self.recorder = Recorder(self.session_dir)
         self.messages: list[dict] = []
         self.shared: list[dict] = []
+        self.progress: dict[str, dict] = {}   # live progress bars of long tasks, keyed by agent|task
         self.files: dict[str, Path] = {}
         self.anchors: dict[str, dict] = {}   # marks you made on the shared screen
         self.attachments: dict[str, dict] = {}   # files you attached to messages (id -> info)
@@ -113,6 +129,7 @@ class Room:
         for spec in cfg["agents"]:
             a = Agent(self, spec)
             self.agents[a.name.lower()] = a
+        self.catalog: list[dict] = cfg.get("catalog") or []   # every agent type that can be seated
         self.alias: dict[str, str] = {}   # first name or handle (lowercase) -> handle
         for a in self.agents.values():
             self.alias[a.person.lower()] = a.name.lower()
@@ -157,13 +174,24 @@ class Room:
         self.quota[group] = {"windows": {**old, **keep}, "asof": time.time()}
         await self.broadcast({"type": "quota", "quota": self.quota})
 
+    def file_token(self, fid: str) -> str:
+        return hmac.new(self.token.encode(), f"file:{self.rid}:{fid}".encode(), hashlib.sha256).hexdigest()
+
+    def public_shared(self, item: dict) -> dict:
+        # Shared scripts can read their own URL: give them a file-only credential.
+        out = {**item, "file_token": self.file_token(item["id"])}
+        if "children" in item:
+            out["children"] = [self.public_shared(c) for c in item["children"]]
+        return out
+
     def snapshot(self) -> dict:
         return {
             "quota": self.quota,
             "type": "snapshot", "user": self.user, "session": self.session, "room": self.rid, "title": self.title,
             "workspace": str(self.workspace), "location": self.location.public(), "stt": self.stt.public(), "tts": self.tts.public(),
             "agents": [a.public() for a in self.agents.values()],
-            "messages": self.messages, "shared": self.shared,
+            "catalog": [{k: c.get(k) for k in ("name", "provider", "model", "color", "role")} for c in self.catalog],
+            "max_copies": MAX_COPIES, "messages": self.messages, "shared": [self.public_shared(s) for s in self.shared], "progress": list(self.progress.values()),
             "approvals": [{k: v for k, v in ap.items() if k != "future"} for ap in self.approvals.values()],
         }
 
@@ -200,6 +228,10 @@ class Room:
             await asyncio.to_thread(self.location.close)
         except Exception:
             pass
+        try:
+            await asyncio.to_thread(storage.clear_pages, self.session_dir)
+        except OSError:
+            pass
         cur = self.session_dir / "minutes.md"
         print(f"  Room '{self.title}' closed. " + (f"Minutes: {cur}" if cur.exists() else "Empty meeting, no minutes written."), flush=True)
 
@@ -207,10 +239,9 @@ class Room:
     async def post(self, sender: str, text: str, kind: str = "msg", hop: int = 0, turn: str | None = None,
                    anchors: list[dict] | None = None, attachments: list[dict] | None = None) -> dict:
         if sender.lower() in self.agents:
-            # Agents only wake others by a deliberate handoff: the message must
-            # START with @name(s). Passing mentions never trigger anyone.
-            lead = LEADING_MENTIONS.match(text)
-            names = {n.lower() for n in MENTION.findall(lead.group(1))} if lead else set()
+            # Agents only wake others by a deliberate handoff: @name(s) opening the
+            # message or one of its sentences/lines. Passing mentions never trigger anyone.
+            names = handoff_names(text)
         else:
             names = {n.lower() for n in MENTION.findall(text)}
             for a in self.agents.values():   # a bare name anywhere counts too ("can you check this, Alejandro?")
@@ -294,20 +325,124 @@ class Room:
                 a.approval = "auto"
         ap["future"].set_result(decision in ("yes", "always"))
 
+    # ---------------- seating agents while the room is open
+    def _seat_table(self, model: str) -> list[dict]:
+        base = instance_table(self.catalog)
+        return [s for s in base if s["name"].lower() == model.lower() or re.fullmatch(re.escape(model.lower()) + r"-\d+", s["name"].lower())]
+
+    async def add_agent(self, model: str) -> str:
+        free = [s for s in self._seat_table(model) if s["name"].lower() not in self.agents]
+        if not free:
+            return f"No free seat left for {model}."
+        if len(self.agents) >= 12:
+            return "The room is full (12 seats)."
+        spec = {k: v for k, v in free[0].items() if k in saved.SPEC_KEYS}
+        a = Agent(self, spec)
+        a.seen = len(self.messages)          # joins now; does not replay the earlier transcript
+        self.agents[a.name.lower()] = a
+        self.alias[a.person.lower()] = a.name.lower()
+        self.alias[a.name.lower()] = a.name.lower()
+        a.task = asyncio.create_task(a.run_forever())
+        self.tasks.append(a.task)
+        await asyncio.to_thread(self.tts.add_agent, spec, [x.spec for x in self.agents.values() if x is not a])
+        saved.checkpoint(self)
+        await self.broadcast({"type": "roster", "agents": [x.public() for x in self.agents.values()],
+                              "tts": self.tts.public()})
+        await self.post("system", f"{a.person} (@{a.name}) joined the meeting.", kind="system")
+        return ""
+
+    async def remove_agent(self, name: str) -> str:
+        a = self.agents.get(name.lower())
+        if not a:
+            return "Unknown agent."
+        if len(self.agents) <= 1:
+            return "The last agent cannot leave."
+        a.stop()
+        t = getattr(a, "task", None)
+        if t:
+            t.cancel()
+            await asyncio.wait([t], timeout=3)
+            if t in self.tasks:
+                self.tasks.remove(t)
+        for ap in list(self.approvals.values()):
+            if ap["agent"].lower() == a.name.lower():
+                self.resolve_approval(ap["id"], "no")
+        await self.clear_progress(a)
+        del self.agents[a.name.lower()]
+        self.alias = {k: v for k, v in self.alias.items() if v != a.name.lower()}
+        self.tts.remove_agent(a.name)
+        saved.checkpoint(self)
+        await self.broadcast({"type": "roster", "agents": [x.public() for x in self.agents.values()],
+                              "tts": self.tts.public()})
+        await self.post("system", f"{a.person} (@{a.name}) left the meeting.", kind="system")
+        return ""
+
+    # ---------------- progress bars for long tasks
+    async def report_progress(self, agent: Agent, args: dict) -> str:
+        task = str(args.get("task") or "").strip()[:80]
+        if not task:
+            return "error: task (a short title) is required"
+        key = f"{agent.name}|{task.lower()}"
+        if args.get("done") or key in self.progress and args.get("percent") is not None and float(args["percent"]) >= 100:
+            if self.progress.pop(key, None):
+                await self.broadcast({"type": "progress_done", "id": key})
+            return f"Progress for '{task}' marked done."
+        old = self.progress.get(key, {})
+        def num(k):
+            try:
+                return None if args.get(k) is None else float(args[k])
+            except (TypeError, ValueError):
+                return None
+        pct, step, steps, eta = num("percent"), num("step"), num("steps"), num("eta_minutes")
+        if pct is None and step is not None and steps:
+            pct = 100 * step / steps
+        item = {"id": key, "agent": agent.name, "task": task,
+                "percent": None if pct is None else max(0.0, min(99.0, pct)),
+                "stage": str(args.get("stage") or old.get("stage") or "")[:120],
+                "step": step if step is not None else old.get("step"), "steps": steps if steps is not None else old.get("steps"),
+                "eta_minutes": eta, "started": old.get("started") or time.time(), "updated": time.time()}
+        self.progress[key] = item
+        await self.broadcast({"type": "progress", "item": item})
+        return "Progress updated on the shared screen."
+
+    async def clear_progress(self, agent: Agent):
+        for key in [k for k, v in self.progress.items() if v["agent"] == agent.name]:
+            del self.progress[key]
+            await self.broadcast({"type": "progress_done", "id": key})
+
     # ---------------- shared screen
-    async def share(self, agent: Agent, path: Path, title: str, source: str | None = None) -> str:
+    async def share(self, agent: Agent, path: Path | list[Path], title: str, source: str | None = None,
+                    parent: str | None = None, sources: list[str] | None = None) -> str:
+        if isinstance(path, list):
+            if not 1 <= len(path) <= 100 or any(not p.is_file() for p in path):
+                raise ValueError("Share 1–100 existing files")
+            folder_id = uuid.uuid4().hex[:12]
+            children = []
+            for i, p in enumerate(path):
+                await self.share(agent, p, p.name.split("_", 1)[1] if sources and sources[i] else p.name,
+                                 source=sources[i] if sources else None, parent=folder_id)
+                children.append(self.shared[-1])
+            item = {"id": folder_id, "agent": agent.name, "title": title, "name": title,
+                    "kind": "folder", "children": children, "ts": time.time(), "source": ""}
+            self.shared.append(item)
+            saved.checkpoint(self)
+            await self.broadcast({"type": "shared", "item": self.public_shared(item)})
+            return f"Folder '{title}' with {len(children)} files is now on the shared screen."
         fid = uuid.uuid4().hex[:12]
         name = path.name.split("_", 1)[1] if source else path.name
         dest = self.shared_dir / f"{fid}_{name}"
-        shutil.copy2(path, dest)
+        await asyncio.to_thread(storage.copy_snapshot, path, dest, self.workspace)
         self.files[fid] = dest
         item = {"id": fid, "agent": agent.name, "title": title, "name": name,
                 "kind": kind_of(path), "ts": time.time(), "source": source or str(path)}
+        if parent:
+            item["parent"] = parent
         self.shared.append(item)
         self.recorder.write(agent.name, "share", source or str(path), turn=getattr(agent, "turn_id", None), title=title,
                            copy=f"shared/{dest.name}")
-        saved.checkpoint(self)
-        await self.broadcast({"type": "shared", "item": item})
+        if not parent:
+            saved.checkpoint(self)
+            await self.broadcast({"type": "shared", "item": self.public_shared(item)})
         return f"'{name}' is now on the shared screen."
 
 
@@ -344,9 +479,13 @@ def room_app(room: Room, hub) -> FastAPI:
         return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
 
     @app.get("/files/{fid}")
-    async def files(fid: str, t: str | None = None, mark: int = 0):
-        check_token(t)
-        p = room_holder["room"].files.get(fid)
+    async def files(fid: str, t: str | None = None, f: str | None = None, mark: int = 0):
+        room = room_holder["room"]
+        if not f or not secrets.compare_digest(f, room.file_token(fid)):
+            check_token(t)
+            # Old room tabs still send the hub token. Strip it before serving any content.
+            return RedirectResponse(f"{room.base}/files/{fid}?f={room.file_token(fid)}&mark={int(bool(mark))}")
+        p = room.files.get(fid)
         if not p or not p.exists():
             raise HTTPException(404)
         headers = {}
@@ -358,6 +497,9 @@ def room_app(room: Room, hub) -> FastAPI:
             # the room page via postMessage (the page can't reach into the sandbox).
             html = p.read_text(encoding="utf-8", errors="replace")
             return HTMLResponse(html + MARK_HELPER, headers=headers)
+        if kind_of(p) == "file":
+            # Unknown active formats (e.g. XHTML) must never execute on the hub origin.
+            return FileResponse(p, media_type="application/octet-stream", filename=p.name, headers=headers)
         return FileResponse(p, headers=headers)
 
     @app.get("/files/{fid}/pdf")
@@ -411,6 +553,8 @@ def room_app(room: Room, hub) -> FastAPI:
             raise HTTPException(413, "audio too long")
         import numpy as np
         audio = np.frombuffer(body, dtype="<f4").astype(np.float32)
+        if not np.isfinite(audio).all():
+            raise HTTPException(400, "audio contains invalid samples")
         room: Room = room_holder["room"]
         prev = unquote(request.headers.get("x-prompt", ""))[-300:]
         try:
@@ -498,6 +642,8 @@ def room_app(room: Room, hub) -> FastAPI:
     # ---- endpoints used by the MCP bridge inside Claude Code agents
     async def internal_body(request: Request) -> tuple[Room, Agent, dict]:
         check_token(request.headers.get("x-mr-token"))
+        if request.headers.get("origin") is not None and request.headers["origin"] not in allowed_origins:
+            raise HTTPException(403, "bad origin")
         body = await request.json()
         room: Room = room_holder["room"]
         a = room.agents.get(str(body.get("agent", "")).lower())
@@ -516,24 +662,94 @@ def room_app(room: Room, hub) -> FastAPI:
         await a.set_status("working", f"{tool} approved" if ok else f"{tool} denied")
         return {"allow": ok}
 
+    @app.post("/internal/progress")
+    async def internal_progress(request: Request):
+        room, a, body = await internal_body(request)
+        return {"text": await room.report_progress(a, body)}
+
     @app.post("/internal/share")
     async def internal_share(request: Request):
         room, a, body = await internal_body(request)
-        if body.get("content_b64"):         # remote (SSH) agent uploaded the file itself
+
+        def local_path(raw: str) -> Path:
+            if room.location.remote:
+                raise ValueError("SSH agents must upload file contents; local paths are unavailable")
+            p = Path(raw).expanduser()
+            return (p if p.is_absolute() else a.workdir / p).resolve()
+
+        async def approve_paths(paths: list[Path]) -> bool:
+            roots = [a.workdir.resolve(), *(Path(d).expanduser().resolve() for d in a.spec.get("add_dirs", []))]
+            outside = [p for p in paths if not any(p.is_relative_to(root) for root in roots)]
+            if not outside or a.approval == "auto":
+                return True
+            old_status, old_activity = a.status, a.activity
+            await a.set_status("waiting", "waiting for approval: share_to_screen")
+            try:
+                return await room.request_approval(a, "share_to_screen", "Share files outside the agent's folders:\n" + "\n".join(map(str, outside)))
+            finally:
+                await a.set_status(old_status, old_activity)
+
+        if "files" in body:
+            entries = body["files"]
+            if not isinstance(entries, list) or not 1 <= len(entries) <= 100:
+                return {"text": "error: share 1–100 files"}
+            paths, sources, uploads = [], [], []
+            try:
+                total = 0
+                for entry in entries:
+                    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not entry["path"].strip():
+                        raise ValueError("every file needs a path")
+                    p = Path(entry["path"]).expanduser()
+                    if "content_b64" in entry:
+                        data = base64.b64decode(entry["content_b64"], validate=True)
+                        total += len(data)
+                        if total > 50 * 1024 * 1024:
+                            raise ValueError("combined files are larger than 50 MB")
+                        up = room.session_dir / "uploads" / f"{uuid.uuid4().hex[:8]}_{p.name}"
+                        up.parent.mkdir(exist_ok=True)
+                        up.write_bytes(data)
+                        uploads.append(up)
+                        paths.append(up)
+                        sources.append(f"{room.location.host}:{p}" if room.location.remote else str(p))
+                    else:
+                        p = local_path(entry["path"])
+                        if not p.is_file():
+                            raise ValueError(f"{p} does not exist")
+                        paths.append(p.resolve())
+                        sources.append("")
+                if not await approve_paths([p for p, src in zip(paths, sources) if not src]):
+                    return {"text": "error: sharing denied by the user"}
+                # Keep original names for uploads; local paths already have their original names.
+                return {"text": await room.share(a, paths, body.get("title") or "Outputs", sources=sources)}
+            except Exception as e:
+                return {"text": f"error: {e}"}
+            finally:
+                for up in uploads:
+                    up.unlink(missing_ok=True)
+        if "content_b64" in body:         # remote (SSH) agent uploaded the file itself
             name = Path(str(body.get("path") or "file")).name or "file"
             up = room.session_dir / "uploads" / f"{uuid.uuid4().hex[:8]}_{name}"
             up.parent.mkdir(exist_ok=True)
             try:
-                up.write_bytes(base64.b64decode(body["content_b64"]))
+                data = base64.b64decode(body["content_b64"], validate=True)
+                if len(data) > 50 * 1024 * 1024:
+                    raise ValueError("file is larger than 50 MB")
+                up.write_bytes(data)
             except Exception as e:
                 return {"text": f"error: bad upload: {e}"}
             src = f"{room.location.host}:{body.get('path')}" if room.location.remote else str(body.get("path") or name)
-            return {"text": await room.share(a, up, body.get("title") or name, source=src)}
-        p = Path(str(body.get("path", ""))).expanduser()
-        if not p.is_absolute():
-            p = a.workdir / p
+            try:
+                return {"text": await room.share(a, up, body.get("title") or name, source=src)}
+            finally:
+                up.unlink(missing_ok=True)
+        try:
+            p = local_path(str(body.get("path", "")))
+        except ValueError as e:
+            return {"text": f"error: {e}"}
         if not p.is_file():
             return {"text": f"error: {p} does not exist"}
+        if not await approve_paths([p]):
+            return {"text": "error: sharing denied by the user"}
         return {"text": await room.share(a, p.resolve(), body.get("title") or p.name)}
 
     @app.websocket("/ws")
@@ -579,6 +795,17 @@ def room_app(room: Room, hub) -> FastAPI:
                         a.approval = ev["mode"]
                         saved.checkpoint(room)
                         await room.broadcast({"type": "agent", "agent": a.public()})
+                elif typ in ("add_agent", "remove_agent"):
+                    err = await (room.add_agent(str(ev.get("model", ""))) if typ == "add_agent"
+                                 else room.remove_agent(str(ev.get("agent", ""))))
+                    if err:
+                        await websocket.send_text(json.dumps({"type": "notice", "text": err}))
+                elif typ == "set_leader":
+                    a = room.agents.get(str(ev.get("agent", "")).lower())
+                    if a:
+                        a.supervisor = bool(ev.get("leader"))
+                        saved.checkpoint(room)
+                        await room.broadcast({"type": "agent", "agent": a.public()})
                 elif typ == "set_effort":
                     a = room.agents.get(str(ev.get("agent", "")).lower())
                     lvl = str(ev.get("effort") or "")
@@ -600,6 +827,13 @@ class Hub:
 
     def __init__(self, cfg: dict, port: int, token: str):
         self.cfg, self.port, self.token = cfg, port, token
+        from . import profile
+        saved_name = profile.load(cfg)
+        self.needs_name = saved_name is None and not cfg.get("_demo")
+        if saved_name:
+            cfg["user_name"] = saved_name
+        elif self.needs_name:
+            cfg["user_name"] = profile.DEFAULT_NAME   # until the first-launch prompt is answered
         self.rooms: dict[str, Room] = {}
         self.mounts: dict[str, object] = {}
         self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
@@ -608,6 +842,7 @@ class Hub:
         self._quitting = False
         self._restoring: set[str] = set()
         self._closing: set[str] = set()
+        self.storage_lock = asyncio.Lock()
 
     def check_token(self, t: str | None):
         if not t or not secrets.compare_digest(t, self.token):
@@ -628,16 +863,17 @@ class Hub:
         title = (title or "").strip()[:60] or (Path(loc.path).name if loc.path else "") or f"Room {n}"
         specs = ([{k: v for k, v in a["spec"].items() if k in saved.SPEC_KEYS}
                   for a in state["agents"]] if state else expand_agents(self.cfg["agents"], names))
-        cfg = {**self.cfg, "agents": specs, "location": loc}
-        try:
-            room = Room(cfg, self.port, self.token, rid=rid, title=title, session=session)
-            if state:
-                saved.restore(room, state)
-            saved.checkpoint(room)
-        except Exception:
-            loc.close()
-            raise
-        self.rooms[rid] = room
+        cfg = {**self.cfg, "agents": specs, "location": loc, "catalog": self.cfg["agents"]}
+        async with self.storage_lock:
+            try:
+                room = Room(cfg, self.port, self.token, rid=rid, title=title, session=session)
+                if state:
+                    saved.restore(room, state)
+                saved.checkpoint(room)
+            except Exception:
+                loc.close()
+                raise
+            self.rooms[rid] = room
         from starlette.routing import Mount
         m = Mount(room.base, app=room_app(room, self))
         self.app.router.routes.insert(0, m)   # ahead of the hub's /r/{rid}/ fallback
@@ -663,6 +899,17 @@ class Hub:
             raise
         finally:
             self._closing.discard(rid)
+        try:
+            await self.compact_closed()
+        except Exception as e:
+            # Saving/closing succeeded; cleanup failure must never undo that result.
+            print(f"  Storage compaction deferred: {e}", flush=True)
+
+    async def compact_closed(self, dry_run: bool = False):
+        async with self.storage_lock:
+            active = {r.session for r in self.rooms.values()}
+            return await asyncio.to_thread(storage.compact,
+                Path(self.cfg["workspace"]).expanduser().resolve(), active, dry_run)
 
     async def quit(self, save: bool = True):
         if self._quitting:
@@ -703,6 +950,7 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
         resp = await call_next(request)
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -710,7 +958,7 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
     @app.get("/")
     async def lobby(t: str | None = None):
         hub.check_token(t)
-        return HTMLResponse(picker.lobby_page(cfg["agents"], token))
+        return HTMLResponse(picker.lobby_page(cfg["agents"], token, cfg.get("user_name", ""), hub.needs_name))
 
     async def lobby_body(request: Request, t: str | None):
         hub.check_token(t)
@@ -776,6 +1024,18 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
         b = await lobby_body(request, t)
         return await asyncio.to_thread(probe, str(b.get("host") or ""), str(b.get("path") or "~"))
 
+    @app.post("/api/profile")
+    async def set_profile(request: Request, t: str | None = None):
+        from . import profile
+        b = await lobby_body(request, t)
+        try:
+            name = profile.save(cfg, b.get("name"))
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        cfg["user_name"] = name   # rooms opened from now on greet this name
+        hub.needs_name = False
+        return {"name": name}
+
     @app.post("/select")
     async def select(request: Request, t: str | None = None):
         b = await lobby_body(request, t)
@@ -799,6 +1059,24 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
         if rid not in hub.rooms:
             raise HTTPException(404)
         await hub.close_room(rid, next_page="lobby", save=b.get("save", True) is not False)
+        return {"ok": True}
+
+    @app.get("/api/storage")
+    async def storage_audit(t: str | None = None):
+        hub.check_token(t)
+        return await hub.compact_closed(dry_run=True)
+
+    @app.post("/api/storage/compact")
+    async def storage_compact(request: Request, t: str | None = None):
+        await lobby_body(request, t)
+        return await hub.compact_closed()
+
+    @app.post("/api/quit")
+    async def quit_app(request: Request, t: str | None = None):
+        b = await lobby_body(request, t)
+        await hub.quit(save=b.get("save", True) is not False)
+        if not hub._quitting:
+            return JSONResponse({"error": "Could not close and save all rooms"}, status_code=500)
         return {"ok": True}
 
     return app

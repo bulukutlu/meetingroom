@@ -104,7 +104,7 @@ function buildShell(L) {
 
 function buildDoor(i, room, kind) {
   const g = new THREE.Group(); g.position.set(i * SPACING, 0, WALL_Z);
-  const isNew = kind === "new", isSet = kind === "settings", isRoom = !isNew && !isSet;
+  const isNew = kind === "new", isSet = kind === "settings", isExit = kind === "exit", isRoom = !isNew && !isSet && !isExit;
   box(DW + 0.18, DH + 0.1, 0.08, 0x4e3119, 0, (DH + 0.1) / 2, 0.02, g);                     // frame
   box(DW, DH, 0.02, new THREE.MeshBasicMaterial({ color: isNew ? 0xffcf7a : isSet ? 0x8fb4ff : 0x1a100a }), 0, DH / 2, 0.065, g);   // doorway behind the leaf
   const hinge = new THREE.Group(); hinge.position.set(-DW / 2, 0, 0.09); g.add(hinge);
@@ -113,11 +113,12 @@ function buildDoor(i, room, kind) {
   box(0.66, 0.72, 0.02, 0x6a3f20, DW / 2, 0.55, 0.03, hinge);                                // lower panel
   if (isNew) box(0.66, 0.6, 0.02, 0x6a3f20, DW / 2, 1.5, 0.03, hinge);
   else if (isSet) box(0.62, 0.52, 0.02, new THREE.MeshBasicMaterial({ map: gearTex() }), DW / 2, 1.52, 0.035, hinge);
+  else if (isExit) box(0.62, 0.52, 0.02, new THREE.MeshBasicMaterial({ map: signTex("EXIT") }), DW / 2, 1.52, 0.035, hinge);
   else box(0.62, 0.52, 0.02, new THREE.MeshBasicMaterial({ map: glass(room.agents) }), DW / 2, 1.52, 0.035, hinge);   // frosted window
   box(0.08, 0.06, 0.08, 0xd9b45a, DW - 0.12, 1.02, 0.06, hinge);                            // handle
   let lampMat = null, light = null;
-  if (isSet) {
-    box(0.62, 0.16, 0.04, new THREE.MeshBasicMaterial({ map: signTex("SETTINGS") }), 0, DH + 0.22, 0.04, g);
+  if (isSet || isExit) {
+    box(0.62, 0.16, 0.04, new THREE.MeshBasicMaterial({ map: signTex(isExit ? "EXIT" : "SETTINGS") }), 0, DH + 0.22, 0.04, g);
     light = new THREE.PointLight(0x8fb4ff, 1.0, 3.0, 1.6); light.position.set(0.15, 1.5, 0.3); g.add(light);
   } else if (isNew) {
     box(0.62, 0.16, 0.04, new THREE.MeshBasicMaterial({ map: signTex("NEW ROOM") }), 0, DH + 0.22, 0.04, g);
@@ -128,11 +129,11 @@ function buildDoor(i, room, kind) {
     box(0.4, 0.03, 0.14, 0x3a2412, 0, DH + 0.18, 0.08, g);
     light = new THREE.PointLight(new THREE.Color(LAMP[lampOf(room)]), 1.0, 2.6, 1.6); light.position.set(0, DH + 0.1, 0.45); g.add(light);
   }
-  const pick = isNew ? { kind: "new" } : isSet ? { kind: "settings" } : { kind: "room", id: room.id };
+  const pick = isNew ? { kind: "new" } : isSet ? { kind: "settings" } : isExit ? { kind: "exit" } : { kind: "room", id: room.id };
   g.traverse(o => { if (o.isMesh) o.userData.pick = pick; });
-  const base = isNew || isSet ? -0.5 : 0;
+  const base = isNew || isSet || isExit ? -0.5 : 0;
   hinge.rotation.y = base;
-  return { g, hinge, leafMat, lampMat, light, pick, base, angle: base, room, state: isNew ? "new" : isSet ? "settings" : lampOf(room) };
+  return { g, hinge, leafMat, lampMat, light, pick, base, angle: base, room, state: isNew ? "new" : isSet ? "settings" : isExit ? "exit" : lampOf(room) };
 }
 
 export function createCorridor({ wrap, canvas, labels, onPick = () => {}, onClose = () => {} }) {
@@ -159,17 +160,18 @@ export function createCorridor({ wrap, canvas, labels, onPick = () => {}, onClos
     const s = JSON.stringify(rooms.map(r => [r.id, r.title, r.label, r.messages, r.approvals, r.agents.map(a => [a.name, a.color, a.status])]));
     if (s === sig) return;
     sig = s;
-    const L = (rooms.length + 1) * SPACING;
+    const L = (rooms.length + 2) * SPACING;
     if (L !== shellLen) { if (shell) { scene.remove(shell); dispose(shell); } shell = buildShell(L); scene.add(shell); shellLen = L; }
     doors.forEach(d => { scene.remove(d.g); dispose(d.g); d.el.remove(); });
-    doors = ["settings", ...rooms, "new"].map((r, i) => {
-      const kind = r === "settings" || r === "new" ? r : "room", set = r === "settings";
+    doors = ["settings", ...rooms, "new", "exit"].map((r, i) => {
+      const kind = r === "settings" || r === "new" || r === "exit" ? r : "room", set = r === "settings", exit = r === "exit";
       if (kind !== "room") r = null;
       const d = buildDoor(i, r, kind); scene.add(d.g);
       const el = document.createElement("div"); el.className = "lbl door";
       el.innerHTML = r
         ? `<div class="tag"><i style="background:${LAMP[d.state]}"></i><b></b><span></span><button class="x" title="Close this room (its agents stop, minutes are saved)">✕</button></div><div class="cap"></div>`
         : set ? `<div class="tag"><i style="background:#8fb4ff"></i><b>Settings</b></div><div class="cap">voice, sound, behaviour</div>`
+        : exit ? `<div class="tag"><i style="background:#e89484"></i><b>Exit</b></div><div class="cap">close all rooms and quit</div>`
         : `<div class="tag"><i style="background:${LAMP.new}"></i><b>New room</b></div><div class="cap">pick who joins and where</div>`;
       if (r) {
         el.querySelector("b").textContent = r.title;
@@ -185,7 +187,7 @@ export function createCorridor({ wrap, canvas, labels, onPick = () => {}, onClos
       labels.appendChild(el); d.el = el;
       return d;
     });
-    span = (rooms.length + 1) * SPACING;
+    span = (rooms.length + 2) * SPACING;
     if (hover) hover = doors.find(d => d.pick.kind === hover.pick.kind && d.pick.id === hover.pick.id) || null;
     camTarget = clampX(camTarget);
     dirty = true;

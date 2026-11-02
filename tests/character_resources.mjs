@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const src=fs.readFileSync(new URL('../meetingroom/static/room3d.js',import.meta.url),'utf8');
+const vendor=fs.readFileSync(new URL('../meetingroom/static/vendor/three.min.js',import.meta.url),'utf8');
+const helpers=src.slice(src.indexOf('const mat ='),src.indexOf('function canvasTex'));
+const chars=src.slice(src.indexOf('const B = {'),src.indexOf('// ---------------------------------------------------------------- homography')).replace('new URL("./faces/" + face.file, import.meta.url).href','face.file');
+const code='import * as THREE from "data:text/javascript;base64,'+Buffer.from(vendor).toString('base64')+'";const pending=[];const texLoader={load(url,done){pending.push(done)}};'+helpers+chars+';export {THREE,buildChar,disposeObject,pending};';
+const {THREE,buildChar,disposeObject,pending}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const rig=buildChar(0x10a37f,null,0x2f3440);
+const unique=new Set(),skeletons=new Set();rig.root.traverse(o=>{if(o.geometry)unique.add(o.geometry);if(o.skeleton)skeletons.add(o.skeleton);for(const m of Array.isArray(o.material)?o.material:o.material?[o.material]:[])unique.add(m)});
+let count=0;for(const r of unique)r.addEventListener('dispose',()=>count++);
+let skeletonCount=0;for(const sk of skeletons){const original=sk.dispose.bind(sk);sk.dispose=()=>{skeletonCount++;original()}}
+rig.dispose();rig.dispose();assert.equal(count,unique.size,'each shared geometry and material released once');assert.equal(skeletonCount,skeletons.size,'each skeleton released once');
+const late=buildChar(0x10a37f,{skin:'#d8a890',hair:'#333333',file:'face.png'},0x2f3440);late.dispose();const texture=new THREE.Texture();let released=false;texture.addEventListener('dispose',()=>released=true);pending.shift()(texture);assert.equal(released,true,'late face texture released instead of attached to removed agent');
+let removed=0,freed=0;
+const c={rig:{root:{},dispose(){freed++}},chair:new THREE.Group(),el:{remove(){removed++}}};
+const context={names:new Set(),chars:new Map([['gone',c]]),scene:{remove(){}},seatOwner:'gone',leanSpots:new Map([['gone',1]]),tagHover:'gone',disposeObject};
+vm.createContext(context);const a=src.indexOf('    for (const [name, c] of [...chars])');const b=src.indexOf('    list.forEach(',a);vm.runInContext(src.slice(a,b),context);
+assert.equal(freed,1);assert.equal(removed,1);assert.equal(context.leanSpots.size,0);assert.equal(context.seatOwner,null);assert.equal(context.tagHover,null);
+console.log('Character cleanup: GPU resources released once, late textures released, removed-agent seat/hover/lean state cleared.');

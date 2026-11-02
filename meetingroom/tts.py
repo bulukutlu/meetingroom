@@ -37,12 +37,12 @@ class Speaker:
     def __init__(self, cfg: dict | None, workspace: Path, agent_specs: list[dict]):
         c = cfg or {}
         self.wanted = (c.get("engine") or "kokoro").lower()  # kokoro | browser
-        self.speed = float(c.get("speed") or 1.1)
+        self.speed = float(c.get("speed") or 1.3)
         self.lang = c.get("lang") or "en-us"
         self.dir = workspace / "models" / "kokoro"
         self.voices = {}
-        for i, s in enumerate(agent_specs):
-            self.voices[s["name"].lower()] = s.get("voice") or VOICE_POOL[i % len(VOICE_POOL)]
+        from .agents import assign_voices   # voice gender follows the agent's face
+        self.voices = assign_voices(agent_specs)
         self.model = None
         self.status = "off" if self.wanted == "browser" else "loading"
         self.detail = ""
@@ -78,6 +78,26 @@ class Speaker:
         except Exception as e:
             self.status, self.detail = "error", f"{type(e).__name__}: {e}"
             print(f"  narration: Kokoro unavailable, using browser voices ({self.detail})", flush=True)
+
+    def add_agent(self, spec: dict, existing: list[dict]):
+        """Give a newly seated agent a voice (same gender as its face, unused if possible) and its clips."""
+        from .agents import assign_voices
+        have = [{**s, "voice": self.voices.get(s["name"].lower()) or s.get("voice")} for s in existing]
+        self.voices[spec["name"].lower()] = assign_voices(have + [dict(spec, voice=None)])[spec["name"].lower()]
+        if self.status != "ready":
+            return          # load() will make the clips once the model is up
+        agent = spec["name"].lower()
+        key = (id(self.model), self.voices[agent], self.speed, self.lang)
+        with _CLIP_LOCK:
+            clips = _CLIPS.get(key)
+            if clips is None:
+                clips = ([self.synth_wav(p, agent) for p in ACK_PHRASES], [self.synth_wav(p, agent) for p in PERMISSION_PHRASES])
+                _CLIPS[key] = clips
+        self.acks[agent], self.perms[agent] = clips
+
+    def remove_agent(self, name: str):
+        for d in (self.voices, self.acks, self.perms):
+            d.pop(name.lower(), None)
 
     def synth_wav(self, text: str, agent: str) -> bytes:
         if self.status != "ready":
@@ -120,7 +140,7 @@ def _load_model(d: Path, speed: float, lang: str):
     return model
 
 
-def preload(model_dir: Path, speed: float = 1.1, lang: str = "en-us") -> Future:
+def preload(model_dir: Path, speed: float = 1.3, lang: str = "en-us") -> Future:
     """Start loading Kokoro in a background thread (once per model dir) and return its Future.
     Called at program start so the model is warm by the time the room opens."""
     with _PRELOAD_LOCK:
@@ -141,7 +161,7 @@ def preload_from_cfg(cfg: dict):
     if (c.get("engine") or "kokoro").lower() == "browser":
         return
     d = Path(cfg["workspace"]).expanduser().resolve() / "models" / "kokoro"
-    preload(d, float(c.get("speed") or 1.1), c.get("lang") or "en-us")
+    preload(d, float(c.get("speed") or 1.3), c.get("lang") or "en-us")
 
 
 PERMISSION_PHRASES = ["I need your permission for this.", "Can I get your approval, please?", "I need a permission here."]
@@ -204,8 +224,16 @@ class MessageAudio:
             item = {"parts": parts, "agent": agent, "wav": [None] * len(parts), "done": [threading.Event() for _ in parts]}
             self.items[mid] = item
             self._order.append(mid)
+            evicted = set()
             while len(self._order) > self.keep:
-                self.items.pop(self._order.popleft(), None)
+                old_mid = self._order.popleft()
+                old = self.items.pop(old_mid, None)
+                evicted.add(old_mid)
+                if old:
+                    for done in old["done"]:
+                        done.set()  # Do not leave an in-flight HTTP audio fetch waiting for 60s.
+            if evicted:
+                self._q = deque(job for job in self._q if job[0] not in evicted)
             self._q.extend((mid, i) for i in range(len(parts)))
             if self._thread is None and self._q:
                 self._thread = threading.Thread(target=self._worker, daemon=True)
@@ -215,7 +243,7 @@ class MessageAudio:
 
     def get(self, mid: str, i: int, timeout: float = 60) -> bytes | None:
         item = self.items.get(mid)
-        if not item or i >= len(item["parts"]):
+        if not item or i < 0 or i >= len(item["parts"]):
             return None
         item["done"][i].wait(timeout)
         return item["wav"][i]

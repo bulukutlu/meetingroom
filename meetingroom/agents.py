@@ -71,50 +71,135 @@ def is_token_limit(error) -> bool:
     ))
 
 
-# Human names handed out to agents, so several instances of one model type can be told apart
-# (and addressed by voice: "Alejandro, plot this"). Override per agent with `person:` in agents.yaml.
-PEOPLE = ["Alejandro", "Priya", "Mateo", "Ingrid", "Kenji", "Amara", "Tomasz", "Leila", "Rafael", "Sunniva",
-          "Dmitri", "Chiara", "Omar", "Freya", "Hiro", "Nadia", "Lucas", "Zainab", "Pavel", "Elena"]
-CLONE_FACES = [4, 6, 3, 1, 2, 5]
+# Faces by apparent gender (see static/faces); names and Kokoro voices follow the face so all three agree.
+FACE_GENDER = {1: "f", 2: "f", 5: "f", 3: "m", 4: "m", 6: "m", 7: "f", 8: "m", 9: "m", 10: "f", 11: "m", 12: "f", 13: "f"}
+CLONE_FACES = [4, 6, 3, 1, 2, 5, 8, 9, 11, 7, 10, 12, 13]
+FEMALE_CLONE_FACES = [1, 2, 5, 7, 10, 12, 13]   # OpenAI agents are always female
+# Names per model family and tier (0 small, 1 mid, 2 large), per gender. Override with `person:` in agents.yaml.
+NAMES = {
+    ("anthropic", 0): {"m": ["Rafael", "Tomasz", "Hiro", "Lucas"], "f": ["Amara", "Nadia", "Chiara", "Freya"]},
+    ("anthropic", 1): {"m": ["Mateo", "Omar", "Pavel", "Dmitri"], "f": ["Priya", "Leila", "Elena", "Zainab"]},
+    ("anthropic", 2): {"m": ["Alejandro", "Kenji", "Henrik", "Matthias"], "f": ["Sofia", "Katarina", "Imani", "Greta"]},
+    ("openai", 0): {"f": ["Mei", "Yara", "Ottilie", "Bianca", "Anneli", "Rosa"]},
+    ("openai", 1): {"f": ["Sunniva", "Camila", "Aiko", "Liv", "Marta", "Selma"]},
+    ("openai", 2): {"f": ["Helga", "Ingrid", "Margarethe", "Noor", "Valentina", "Astrid"]},
+}
+# Kokoro voices by gender, handed out in order so loaded agents sound different.
+VOICES = {"m": ["am_michael", "bm_george", "am_adam", "am_puck", "bm_daniel", "am_eric", "am_liam"],
+          "f": ["af_heart", "bf_emma", "af_nicole", "bf_isabella", "af_bella"]}
+
+
+def agent_family_tier(spec: dict) -> tuple[str, int]:
+    prov = spec.get("provider", "mock")
+    m = (spec.get("model") or "").lower()
+    if prov == "mock":
+        n = spec.get("name", "").lower()
+        prov = "openai" if any(k in n for k in ("gpt", "codex", "openai")) else "anthropic"
+        m = n
+    if prov in ("codex", "openai"):
+        return "openai", 0 if "nano" in m else 1 if ("mini" in m or "spark" in m) else 2
+    return "anthropic", 0 if "haiku" in m else 1 if "sonnet" in m else 2
+
+
+def agent_gender(spec: dict) -> str:
+    return FACE_GENDER.get(agent_face(spec), "m")
 
 
 def assign_people(specs: list[dict]) -> list[dict]:
-    """Give every spec a unique `person` (human name); explicit ones are kept, the rest come from PEOPLE."""
+    """Give every spec a unique `person` matching its face's gender and its model type; explicit ones are kept."""
     used = {str(s["person"]).lower() for s in specs if s.get("person")}
     handles = {s["name"].lower() for s in specs}
-    pool = [n for n in PEOPLE if n.lower() not in used and n.lower() not in handles]
     for s in specs:
-        if not s.get("person"):
-            s["person"] = pool.pop(0) if pool else f"Agent{len(used) + 1}"
-            used.add(s["person"].lower())
+        if s.get("person"):
+            continue
+        fam, tier = agent_family_tier(s)
+        g = agent_gender(s) if fam == "anthropic" else "f"
+        order = [NAMES[(fam, tier)][g]] + [NAMES[(fam, t)][g] for t in (2, 1, 0) if t != tier]
+        pick = next((n for pool in order for n in pool if n.lower() not in used and n.lower() not in handles), None)
+        s["person"] = pick or f"Agent{len(used) + 1}"
+        used.add(s["person"].lower())
     return specs
 
 
-def expand_agents(base: list[dict], wanted: list[str]) -> list[dict]:
-    """Specs for the wanted handles. A handle named again (or a new `sonnet-2` style one) becomes a
-    clone of its base spec with a unique handle, its own colour shade and its own face."""
+def assign_voices(specs: list[dict]) -> dict[str, str]:
+    """agent name -> Kokoro voice, always of the same gender as the agent's face."""
+    taken = {s["voice"] for s in specs if s.get("voice")}
+    nxt = {"m": 0, "f": 0}
+    out = {}
+    for s in specs:
+        if s.get("voice"):
+            out[s["name"].lower()] = s["voice"]
+            continue
+        g = agent_gender(s)
+        pool = VOICES[g]
+        free = [v for v in pool if v not in taken] or pool
+        v = free[nxt[g] % len(free)] if free is pool else free[0]
+        nxt[g] += 1
+        taken.add(v)
+        out[s["name"].lower()] = v
+    return out
+
+
+MAX_COPIES = 4
+
+
+def _face_for_clone(base_spec: dict, i: int) -> int:
+    if agent_family_tier(base_spec)[0] == "openai":   # OpenAI agents are always female
+        return FEMALE_CLONE_FACES[(i - 2) % len(FEMALE_CLONE_FACES)]
+    f = agent_face(base_spec)
+    return CLONE_FACES[(i + CLONE_FACES.index(f) - 1) % len(CLONE_FACES)] if f in CLONE_FACES else (i % 6) + 1
+
+
+def _expand(base: list[dict], wanted: list[str]) -> list[dict]:
     by = {a["name"].lower(): a for a in base}
     out: list[dict] = []
     count: dict[str, int] = {}
     for w in wanted:
         k = w.lower()
-        root = k if k in by else re.sub(r"[-_ ]?\d+$", "", k)
+        explicit = 0
+        if k in by:
+            root = k
+        else:
+            m = re.fullmatch(r"(.+?)[-_ ]?(\d+)", k)
+            root = m.group(1) if m else k
+            explicit = int(m.group(2)) if m else 0
         if root not in by:
             continue
         spec = dict(by[root])
-        n = count[root] = count.get(root, 0) + 1
+        n = 1 if explicit else count.get(root, 0) + 1
+        if not explicit:
+            count[root] = n
         taken = {s["name"].lower() for s in out}
-        if n > 1 or k in taken:
+        i = 0
+        if explicit > 1 and f"{root}-{explicit}" not in taken:
+            i = explicit
+        elif n > 1 or (k in taken):
             i = 2
             while f"{root}-{i}" in taken or f"{root}-{i}" in by:
                 i += 1
+        if i:
             spec["name"] = f"{root}-{i}"
             spec.pop("person", None)
-            spec["color"] = shade(spec.get("color", "#8888ff"), i - 1)
-            spec["face"] = CLONE_FACES[(i + CLONE_FACES.index(agent_face(by[root])) - 1) % len(CLONE_FACES)] if agent_face(by[root]) in CLONE_FACES else (i % 6) + 1
+            spec["face"] = _face_for_clone(by[root], i)
             spec.pop("voice", None)
         out.append(spec)
     return assign_people(out)
+
+
+def instance_table(base: list[dict]) -> list[dict]:
+    """Every seat a model can fill (handle, name, face, colour), the same whichever seats are chosen."""
+    return _expand(base, [a["name"] for a in base for _ in range(MAX_COPIES)])
+
+
+def expand_agents(base: list[dict], wanted: list[str]) -> list[dict]:
+    """Specs for the wanted handles. `sonnet-2` style handles (or a handle named again) are clones of
+    their base spec with the same shirt colour and their own face and name, fixed per handle."""
+    fixed = {s["name"].lower(): s.get("person") for s in instance_table(base)}
+    out = _expand(base, wanted)
+    for s in out:
+        if s["name"].lower() in fixed and not re.fullmatch(r"[^\d]+", s["name"]) :
+            s["person"] = fixed[s["name"].lower()]
+    return out
 
 
 def shade(hexcol: str, k: int) -> str:
@@ -147,7 +232,7 @@ MEETING_RULES = """MEETING RULES (they override your usual style):
 - Exception, big tasks: before starting a long project (many steps, minutes of work), give ONE short heads-up sentence saying what you will do (e.g. "I'll refactor the parser and rerun all fits."). Do not wait for a reply; start working right away. Never do this for routine or quick tasks.
 - Do not answer for others or comment on messages addressed to someone else.
 - Lines starting "↳ points at" are marks the host drew on the shared screen: they say exactly which part of what was shown (text quoted verbatim, page/lines, or a small region image) the message is about. Act on that part; open a region image only when the quoted text isn't enough.
-- Hand work to another participant only when needed, by STARTING your reply with their @handle (shown in the roster) and the concrete task (e.g. "@sonnet plot thr_map.csv as a heatmap."). The room also accepts their first name as @Name. People may call you by your first name too. Mentioning a name anywhere else does nothing; refer to others without @ otherwise.
+- Hand work to another participant only when needed, by STARTING your reply with their @handle (shown in the roster) and the concrete task (e.g. "@sonnet plot thr_map.csv as a heatmap."). To hand tasks to several people, start each sentence or line with its @handle (e.g. "@sonnet plot X. @codex check Y."). The room also accepts their first name as @Name. People may call you by your first name too. An @handle in the middle of a sentence does nothing; refer to others without @ otherwise.
 """
 TURN_REMINDER = ("REMINDER: be as brief as possible. Task: show the result on screen, then \"Here it is.\" (only if you showed something on screen; otherwise just answer directly) plus at most ONE short "
                  "sentence for a caveat; max 25 words, no lists, no recap. Quick question: max 10 words. Never describe what is on "
@@ -203,7 +288,7 @@ class Agent:
         return {
             "name": self.name, "person": self.person, "provider": self.provider, "model": self.model,
             "color": self.color, "role": self.role, "status": self.status,
-            "activity": self.activity, "approval": self.approval,
+            "activity": self.activity, "approval": self.approval, "supervisor": self.supervisor,
             "effort": self.effort, "efforts": EFFORTS.get(self.provider, []),
             "offline_reason": self.offline_reason, "workdir": self.where(),
             "face": agent_face(self.spec), "usage": self.usage,
@@ -244,8 +329,9 @@ How the meeting works:
 - You receive new transcript lines since your last turn, then the request addressed to you. Your final text answer is posted to the meeting.
 - You can actually do work on {self.room.user}'s machine with tools: run_shell, run_python, read_file, write_file, list_dir. Machine: {tools.machine_info(self.room.python)}.
 - Your workspace folder is {self.workdir}. Relative paths resolve there. Files elsewhere may be accessed with absolute paths; {self.room.user} may be asked to approve.
-{location_note(self)}- Show results with share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). Prefer showing over describing.
+{location_note(self)}- Show results with share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). Prefer showing over describing. For multiple related outputs, call share_to_screen with paths: ["plot.png", "summary.md"] and a title to show a clickable folder; use path for a single file.
 - If a tool call is denied, do not retry it unchanged; adapt or ask.
+- For any job you expect to take more than 5 minutes, call report_progress with task (short title), stage (what is happening now), step/steps or percent, and eta_minutes; update it at each stage and finish with done=true. It shows as a progress bar on the shared screen.
 """
 
     # ---------- turn handling ----------
@@ -343,10 +429,11 @@ How the meeting works:
         )
         self.turn_id = uuid.uuid4().hex[:10]
         self.trace("prompt", prompt)
-        await self.set_status("thinking", "")
+        await self.set_status("thinking", "Reviewing request…")
         reply = (await self.backend.turn(prompt) or "").strip()
         self.pending_context = ""
         await self.set_status("idle", "")
+        await self.room.clear_progress(self)   # bars only live while the turn runs
         if reply.strip(" .*_`\"'").upper() in ("PASS", ""):
             self.trace("pass", reply)
             return  # nothing to say: stay silent
@@ -367,12 +454,16 @@ How the meeting works:
             if not ok:
                 await self.set_status("working", f"denied: {name}")
                 return "The user DENIED this action. Do not retry it unchanged."
+        if name == "report_progress":
+            out = await self.room.report_progress(self, args)
+            self.trace("tool_result", out, tool=name)
+            return out
         await self.set_status("working", f"{name}: {first[:120]}")
         self.trace("tool_call", summary or json.dumps(args, indent=1), tool=name)
         out = await tools.execute(name, args, self.workdir, self.room.python,
                                   lambda p, title: self.room.share(self, p, title))
         self.trace("tool_result", out, tool=name)
-        await self.set_status("thinking", f"{name} done")
+        await self.set_status("thinking", f"Reviewing results: {name}")
         return out
 
 
@@ -416,7 +507,12 @@ def cli_meeting_prompt(a: Agent, tools_hint: str) -> str:
         f"in the meeting-room app. Your role: {a.role or 'general assistant'}. Other AI participants: {roster}.\n\n"
         + MEETING_RULES + location_note(a) +
         "\nEach turn you get the new transcript lines and the request addressed to you. Do the work with your "
-        "tools; your final text is posted to the meeting. " + tools_hint
+        "tools; your final text is posted to the meeting. " + tools_hint +
+        '\nFor multiple related outputs, call share_to_screen with paths: ["plot.png", "summary.md"] '
+        'and a title to show a clickable folder. Use path for a single file.'
+        '\nFor any job you expect to take more than 5 minutes, call the meetingroom report_progress tool with task (short title), '
+        'stage (what is happening now), step/steps or percent, and eta_minutes; update it at each stage and finish with done=true. '
+        'It shows as a progress bar on the shared screen.'
     )
 
 
@@ -563,7 +659,7 @@ class ClaudeCodeBackend:
                "--append-system-prompt", self._meeting_prompt(),
                "--mcp-config", self.mcp_config,
                "--permission-prompt-tool", "mcp__meetingroom__approve",
-               "--allowedTools", "mcp__meetingroom__share_to_screen"]
+               "--allowedTools", "mcp__meetingroom__share_to_screen", "mcp__meetingroom__report_progress"]
         if a.model:
             cmd += ["--model", a.model]
         if a.effort:
@@ -659,7 +755,7 @@ class ClaudeCodeBackend:
                                 c = "\n".join(x.get("text", "") if x.get("type") == "text" else f"[{x.get('type')}]"
                                               for x in c if isinstance(x, dict))
                             a.trace("tool_result", str(c or ""), error=bool(b.get("is_error")))
-                    await a.set_status("thinking", None)
+                    await a.set_status("thinking", "Reviewing tool results…")
                 elif t == "rate_limit_event":
                     info = ev.get("rate_limit_info") or {}
                     await a.room.set_quota(info)
@@ -730,6 +826,7 @@ class CodexBackend:
                 "-c", 'mcp_servers.meetingroom.env_vars=["MR_URL","MR_TOKEN","MR_AGENT","MR_HOST","MR_UPLOAD"]',
                 "-c", "mcp_servers.meetingroom.tool_timeout_sec=86400",
                 "-c", 'mcp_servers.meetingroom.tools.share_to_screen.approval_mode="approve"',
+                "-c", 'mcp_servers.meetingroom.tools.report_progress.approval_mode="approve"',
                 "-c", f"sandbox_mode={json.dumps(self.sandbox)}",
                 "-c", 'approval_policy="never"']
         if self.network:
@@ -794,6 +891,7 @@ class CodexBackend:
         proc.stdin.close()
         err_task = asyncio.create_task(proc.stderr.read())
         final, error = None, None
+        active_tools = set()
         try:
             async for raw in proc.stdout:
                 try:
@@ -801,12 +899,19 @@ class CodexBackend:
                 except json.JSONDecodeError:
                     continue
                 t, item = ev.get("type"), ev.get("item") or {}
+                if item.get("type") in ("command_execution", "mcp_tool_call", "file_change"):
+                    if t == "item.started":
+                        active_tools.add(item.get("id"))
+                        activity = (f"shell: {str(item.get('command', ''))[:120]}"
+                                    if item.get("type") == "command_execution"
+                                    else str(item.get("tool") or "editing files"))
+                        await a.set_status("working", activity)
+                    elif t == "item.completed":
+                        active_tools.discard(item.get("id"))
+                        if not active_tools:
+                            await a.set_status("thinking", "Reviewing tool results…")
                 if t == "thread.started":
                     self.thread_id = ev.get("thread_id") or self.thread_id
-                elif t == "item.started" and item.get("type") == "command_execution":
-                    await a.set_status("working", f"shell: {str(item.get('command', ''))[:120]}")
-                elif t == "item.started" and item.get("type") == "mcp_tool_call":
-                    await a.set_status("working", str(item.get("tool", "tool")))
                 elif t == "item.completed" and item.get("type") == "command_execution":
                     a.trace("tool_call", str(item.get("command", "")), tool="shell")
                     a.trace("tool_result", f"[exit {item.get('exit_code')}]\n{item.get('aggregated_output', '')}", tool="shell")
@@ -820,9 +925,13 @@ class CodexBackend:
                     if final:
                         a.trace("thought", final)
                     final = item.get("text", "")
+                    if not active_tools:
+                        await a.set_status("thinking", str(item.get("text", "")).strip()[:200])
                 elif t == "item.completed" and item.get("type") == "reasoning":
                     a.trace("thought", str(item.get("text", "")))
-                    await a.set_status("thinking", str(item.get("text", "")).strip()[:200])
+                    if not active_tools:
+                        # Reasoning is private; retain the last public activity instead.
+                        await a.set_status("thinking", None)
                 elif t in ("turn.failed", "error"):
                     error = (ev.get("error") or {}).get("message") or ev.get("message") or str(ev)
             await proc.wait()

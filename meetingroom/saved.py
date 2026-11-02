@@ -21,7 +21,7 @@ def checkpoint(room, status="recovery"):
     agents = []
     for a in room.agents.values():
         spec = {k: v for k, v in a.spec.items() if k in SPEC_KEYS}
-        spec.update(approval=a.approval, effort=a.effort)
+        spec.update(approval=a.approval, effort=a.effort, supervisor=a.supervisor)
         agents.append({"spec": spec, "seen": a.seen,
                        "pending_context": a.pending_context, "usage": a.usage,
                        "backend": {k: getattr(a.backend, k) for k in BACKEND_KEYS

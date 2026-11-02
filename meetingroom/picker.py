@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .agents import agent_face
+from .agents import agent_face, instance_table
 from .location import ssh_hosts
 
 STATIC = Path(__file__).parent / "static"
@@ -14,8 +14,9 @@ STATIC = Path(__file__).parent / "static"
 def _char_source() -> str:
     """The room's own buildChar() (same body), lifted from room3d.js so the picker never drifts from it."""
     src = (STATIC / "room3d.js").read_text()
+    h = src.index("const mat = (c, extra"); helpers = src[h:src.index("function canvasTex")]
     a, b = src.index("const B = {"), src.index("// ---------------------------------------------------------------- homography")
-    return src[a:b].replace('new URL("./faces/" + face.file, import.meta.url).href', '"/static/faces/" + face.file')
+    return helpers + src[a:b].replace('new URL("./faces/" + face.file, import.meta.url).href', '"/static/faces/" + face.file')
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room - corridor</title><link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <style>
@@ -64,17 +65,17 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  #sett{display:none;min-height:100vh;flex-direction:column;align-items:center;padding:5vh 20px 40px;background:var(--bg)} body.sett #sett{display:flex} body.sett{display:block;height:auto;overflow:auto}
  #sett .where{width:min(560px,100%);box-sizing:border-box;border:2px solid #000;box-shadow:4px 4px 0 #000;background:var(--panel);padding:14px 16px;margin-bottom:14px;font-family:var(--mono)}
  #sett h3{margin:0 0 8px;font:700 12px var(--mono);color:var(--amber);letter-spacing:.1em;text-transform:uppercase} #sett label.t{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px;color:var(--text)} #sett .d{color:var(--dim);font-size:11px;margin:-3px 0 6px 26px} #sett input[type=range]{flex:1}
- .grid{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;max-width:980px}
- .card{position:relative;width:200px;padding:12px 12px 14px;background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;
+ .grid{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;max-width:1000px}
+ .card{position:relative;width:140px;padding:8px 8px 10px;background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;
   cursor:pointer;user-select:none;transition:transform .15s,border-color .15s,opacity .2s,filter .2s;box-shadow:0 8px 22px #0008}
  .card:hover{transform:translateY(-4px)}
- .card .win{height:190px;border-radius:6px;overflow:hidden;background:radial-gradient(circle at 50% 30%,#4a3320,#1a120c 75%);border:1px solid var(--line)}
+ .card .win{height:120px;border-radius:6px;overflow:hidden;background:radial-gradient(circle at 50% 30%,#4a3320,#1a120c 75%);border:1px solid var(--line)}
  .card canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
  .card:not(.on){opacity:.5;filter:grayscale(.85)}
  .card.on{border-color:var(--c);box-shadow:0 0 0 1px var(--c),0 0 26px -6px var(--c),0 8px 22px #0008}
- .name{margin-top:10px;font-weight:700;display:flex;align-items:center;gap:8px}
+ .name{margin-top:6px;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
  .name i{width:9px;height:9px;background:var(--c);display:inline-block}
- .role{color:var(--muted);font-size:12px;margin-top:2px;min-height:34px}
+ .role{color:var(--muted);font-size:11px;margin-top:2px;max-height:2.9em;overflow:hidden}
  .chair{position:absolute;top:8px;right:8px;font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.08em;padding:3px 7px;border-radius:4px;background:#000a;color:var(--dim)}
  .on .chair{background:var(--c);color:#1a120c}
  .qty{display:flex;align-items:center;gap:6px;margin-top:8px}.qty span{flex:1;text-align:center;font-size:12px;color:var(--muted)}
@@ -110,11 +111,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
 <div id="sett"><h1>&#9881; Settings</h1><h2>How the room works</h2><p class="sub">Saved in this browser; every room picks them up when it opens.</p>
 <div class="where"><h3>Voice</h3>
  <label class="t"><input type="checkbox" data-s="tts"> Read replies aloud</label><div class="d">Agents' replies are spoken with the local voices.</div>
+ <label class="t" for="srate">Speech speed <input type="range" id="srate" min="75" max="200" step="5"> <span id="sratev"></span></label><div class="d">How fast agents speak. 100% is the default pace.</div>
  <label class="t">Agents talking to each other <input type="range" id="avol" min="0" max="100" step="5"> <span id="avolv"></span></label><div class="d">Volume relative to speech addressed to you (100% = same as yours).</div></div>
-<div class="where"><h3>Sound</h3><label class="t"><input type="checkbox" data-s="sounds"> Acknowledgements and keyboard clicks</label></div>
+<div class="where"><h3>Sound</h3><label class="t"><input type="checkbox" data-s="sounds"> Acknowledgements and keyboard clicks</label>
+ <label class="t" for="mvol">Music volume <input type="range" id="mvol" min="0" max="100" step="5"> <span id="mvolv"></span></label><div class="d">Jukebox music in meeting rooms. 0% mutes the music.</div></div>
+<div class="where"><h3>You</h3><label class="t" for="uname">Your name <input type="text" id="uname" maxlength="40" autocomplete="off" spellcheck="false" style="flex:1;background:#0e0a07;color:var(--text);border:2px solid #000;padding:6px 8px;font:13px var(--mono)"> <button class="wbtn" id="unamesave">Save</button></label><div class="d" id="unamest">How agents address you. Applies to rooms opened from now on.</div></div>
 <div class="where"><h3>Input</h3><label class="t"><input type="checkbox" data-s="autosend"> Send voice messages automatically</label></div>
+<div class="where"><h3>Storage</h3><p id="storageInfo" style="font-size:12px">Checking reclaimable space…</p><button id="compactStorage" class="wbtn">Compact closed meetings now</button><p style="font-size:11px;color:var(--muted)">Meetings are compacted automatically when closed. History, original outputs and speech models are kept. Open meetings are left untouched.</p></div>
 <div class="bar"><span class="link" id="sback">&larr; Back to the corridor</span></div></div>
-<div id="setup"><h1>&#9679; New room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair, or use + chair to seat several of the same model.</p>
+<div id="welcome" style="display:none;position:fixed;inset:0;z-index:50;background:#0e0907f2;align-items:center;justify-content:center"><div class="where" style="margin:0;font-family:var(--mono);text-align:center"><h3>Welcome</h3><p style="margin:0 0 12px">What should the agents call you?</p><div class="wrow"><input id="wname" maxlength="40" autocomplete="off" spellcheck="false"><button class="wbtn" id="wok">Continue</button></div></div></div>
+<div id="setup"><h1>&#9679; New room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair; every seat of a model has its own face and name.</p>
 <div class="grid" id="grid"></div>
 <div class="where">
  <h3>Where does the meeting take place?</h3>
@@ -138,38 +144,37 @@ const FACES=await fetch('/static/faces/faces.json').then(r=>r.json()).catch(()=>
 const MAXC=4;
 const cnt={};AGENTS.forEach(a=>cnt[a.name]=0);
 {let saved=JSON.parse(localStorage.getItem(KEY)||'null');if(!Array.isArray(saved))saved=AGENTS.map(a=>a.name);
- saved.forEach(n=>{if(n in cnt&&cnt[n]<MAXC)cnt[n]++});
- if(!Object.values(cnt).some(v=>v))AGENTS.forEach(a=>cnt[a.name]=1)}
+ saved.forEach(n=>{if(n in cnt)cnt[n]=1});
+ if(!Object.values(cnt).some(v=>v))AGENTS.filter(a=>!/-\\d+$/.test(a.name)).forEach(a=>cnt[a.name]=1)}
 const total=()=>Object.values(cnt).reduce((x,y)=>x+y,0);
 const $=id=>document.getElementById(id), grid=$('grid'), busts=[];
 let built=false;
 const texLoader=new THREE.TextureLoader();
 __CHAR__
-function bust(a,canvas){
+const CW=128,CH=150;let _r=null;
+function SHARED(){if(!_r){_r=new THREE.WebGLRenderer({antialias:false,alpha:true});_r.setPixelRatio(1);_r.setSize(CW,CH,false)}return _r}
+function bust(a,canvas){canvas.width=CW;canvas.height=CH;
  const f=FACES[(a.face||1)-1];
- const r=new THREE.WebGLRenderer({canvas,antialias:false,alpha:true});r.setPixelRatio(.5);
+ const r=SHARED(),ctx=canvas.getContext('2d');
  const sc=new THREE.Scene(), cam=new THREE.PerspectiveCamera(24,1,.1,20);
  sc.add(new THREE.HemisphereLight(0xfff0d8,0x4a3320,1.1));const d=new THREE.DirectionalLight(0xffd9a0,.9);d.position.set(2,3,3);sc.add(d);
- const rig=buildChar(parseInt(a.color.slice(1),16),f,0x2f3440);rig.root.rotation.y=0;sc.add(rig.root);
+ const rig=buildChar(parseInt(a.color.slice(1),16),f,0x2f3440);rig.leaderHat.visible=false;rig.root.rotation.y=0;sc.add(rig.root);
  rig.armL.rotation.z=.06;rig.armR.rotation.z=-.06;
- cam.position.set(0,1.62,2.1);cam.lookAt(0,1.4,0);
+ cam.position.set(0,1.7,2.3);cam.lookAt(0,1.45,0);
  const ph=Math.random()*6;
  busts.push(t=>{const on=cnt[a.name]>0;rig.root.rotation.y=Math.sin(t*.7+ph)*(on?.5:.2);
   rig.head.rotation.x=Math.sin(t*1.1+ph)*.04+(on?0:.3);rig.upper.rotation.x=on?0:.08;rig.root.position.y=Math.sin(t*2+ph)*(on?.008:0);
-  r.setSize(canvas.clientWidth,canvas.clientHeight,false);cam.aspect=canvas.clientWidth/canvas.clientHeight;cam.updateProjectionMatrix();r.render(sc,cam)});
+  cam.aspect=CW/CH;cam.updateProjectionMatrix();r.render(sc,cam);ctx.clearRect(0,0,CW,CH);ctx.drawImage(r.domElement,0,0)});
 }
 function buildCards(){if(built)return;built=true;
 AGENTS.forEach(a=>{const c=document.createElement('div');c.className='card';c.style.setProperty('--c',a.color);
- c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>@'+a.name+'</div><div class="role">'+a.provider+(a.role?' - '+a.role:'')+'</div><div class="qty"><button data-d="-1" title="Remove a chair">&minus;</button><span></span><button data-d="1" title="Add another chair for this model">+ chair</button></div>';
- c.onclick=e=>{const b=e.target.closest('[data-d]');
-  if(b){const n=cnt[a.name]+ +b.dataset.d;if(n>=0&&n<=MAXC&&total()+ +b.dataset.d<=12)cnt[a.name]=n}
-  else cnt[a.name]=cnt[a.name]?0:1;
-  draw()};grid.append(c);a.el=c;
+ c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>'+esc(a.person)+' <span style="font-weight:400;color:var(--muted)">@'+esc(a.name)+'</span></div><div class="role">'+esc(a.provider)+(a.role?' - '+esc(a.role):'')+'</div>';
+ c.onclick=()=>{if(cnt[a.name])cnt[a.name]=0;else if(total()<12)cnt[a.name]=1;draw()};grid.append(c);a.el=c;
  try{bust(a,c.querySelector('canvas'))}catch(e){c.querySelector('.win').textContent=''}});
 draw()}
-function draw(){if(!built)return;AGENTS.forEach(a=>{const n=cnt[a.name],on=n>0;a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?(n>1?n+' CHAIRS':'SEATED'):'EMPTY';a.el.querySelector('.qty span').textContent=n+(n===1?' chair':' chairs')});
+function draw(){if(!built)return;AGENTS.forEach(a=>{const n=cnt[a.name],on=n>0;a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?'SEATED':'EMPTY'});
  $('go').disabled=!total();$('go').textContent='Open room ('+total()+' seated)'}
-$('all').onclick=()=>{const any=total()>0;AGENTS.forEach(a=>cnt[a.name]=any?0:1);draw()};
+$('all').onclick=()=>{const any=total()>0;AGENTS.forEach(a=>cnt[a.name]=any||/-\\d+$/.test(a.name)?0:1);draw()};
 (function loop(t){if(document.body.classList.contains('setup'))busts.forEach(b=>b(t/1000));requestAnimationFrame(loop)})(0);
 $('go').onclick=async()=>{const names=AGENTS.flatMap(a=>Array(cnt[a.name]).fill(a.name)), w=where();
  if(w.kind!=='default'&&!w.path&&w.kind==='local'){status('Choose a project folder (or pick “Agents’ own folders”).','bad');return}
@@ -247,17 +252,39 @@ drawWhere();
 function openSetup(){buildCards();document.body.classList.add('setup');scrollTo(0,0);status('');drawWhere()}
 function closeSetup(){document.body.classList.remove('setup')}
 const SD={tts:0,sounds:1,autosend:0};
-function openSett(){document.body.classList.add('sett');scrollTo(0,0);
+function openSett(){document.body.classList.add('sett');scrollTo(0,0);refreshStorage();
  document.querySelectorAll('#sett [data-s]').forEach(c=>{const v=localStorage.getItem('mr_'+c.dataset.s);c.checked=v===null?!!SD[c.dataset.s]:v==='1';c.onchange=()=>localStorage.setItem('mr_'+c.dataset.s,c.checked?'1':'0')});
  const r=$('avol'),v=localStorage.getItem('mr_agentvol');r.value=Math.round((v===null?.55:+v)*100);$('avolv').textContent=r.value+'%';
- r.oninput=()=>{$('avolv').textContent=r.value+'%';localStorage.setItem('mr_agentvol',r.value/100)}}
+ r.oninput=()=>{$('avolv').textContent=r.value+'%';localStorage.setItem('mr_agentvol',r.value/100)};
+ const sr=$('srate'),sv=parseFloat(localStorage.getItem('mr_speechrate'));sr.value=Math.round((sv>=.5&&sv<=2.5?sv:1)*100);$('sratev').textContent=sr.value+'%';
+ sr.oninput=()=>{$('sratev').textContent=sr.value+'%';localStorage.setItem('mr_speechrate',sr.value/100)};
+ const m=$('mvol'),mv=parseFloat(localStorage.getItem('mr_musicvol'));m.value=Math.round((mv>=0&&mv<=1?mv:.5)*100);$('mvolv').textContent=m.value+'%';
+ m.oninput=()=>{$('mvolv').textContent=m.value+'%';localStorage.setItem('mr_musicvol',m.value/100)}}
+const UNAME=__USERNAME__;
+async function saveName(v,st){const n=v.trim();if(!n){if(st)st.textContent='Please enter a name.';return false}
+ const r=await fetch('/api/profile'+Q,{method:'POST',body:JSON.stringify({name:n})});
+ if(!r.ok){if(st)st.textContent='Could not save the name.';return false}
+ const j=await r.json();if(st)st.textContent='Saved as '+j.name+'. Applies to rooms opened from now on.';return true}
+{const u=$('uname');u.value=UNAME;$('unamesave').onclick=()=>saveName(u.value,$('unamest'));u.onkeydown=e=>{if(e.key==='Enter')$('unamesave').click()}}
+if(__ASKNAME__){const w=$('welcome');w.style.display='flex';$('wname').value=UNAME;$('wname').select();
+ const go=async()=>{if(await saveName($('wname').value)){$('uname').value=$('wname').value.trim();w.style.display='none'}};
+ $('wok').onclick=go;$('wname').onkeydown=e=>{if(e.key==='Enter')go()}}
 const closeSett=()=>document.body.classList.remove('sett');$('sback').onclick=closeSett;
+async function refreshStorage(){try{const r=await fetch('/api/storage'+Q);if(!r.ok)throw Error('Could not check storage');const d=await r.json();$('storageInfo').textContent=(d.reclaimed_bytes/1048576).toFixed(1)+' MB can be reclaimed.'}catch(e){$('storageInfo').textContent=e.message}}
+$('compactStorage').onclick=async()=>{const b=$('compactStorage');b.disabled=true;$('storageInfo').textContent='Compacting meeting files…';try{const r=await fetch('/api/storage/compact'+Q,{method:'POST',body:'{}'});if(!r.ok)throw Error('Could not compact storage');const d=await r.json();$('storageInfo').textContent='Reclaimed '+(d.reclaimed_bytes/1048576).toFixed(1)+' MB. Meetings and outputs preserved.'}catch(e){$('storageInfo').textContent=e.message}finally{b.disabled=false}};
 $('back').onclick=closeSetup;$('newbtn').onclick=openSetup;
 addEventListener('keydown',e=>{if(e.key==='Escape'){closeSetup();closeSett()}});
 let ROOMS=[],hall=null;
+async function quitApp(){
+ if(!confirm('Close all rooms and quit the app? Meeting status will be saved for later.'))return;
+ try{const res=await fetch('/api/quit'+Q,{method:'POST',body:JSON.stringify({save:true})});
+  if(!res.ok){alert('Could not close and save all rooms. The app is still running.');return}
+  document.body.innerHTML='<main style="padding:15vh 24px;text-align:center"><h1>Meeting Room closed</h1><p>Meeting status and minutes saved. You can close this tab.</p></main>';
+ }catch(e){alert('Could not quit the app. Please try again.')}
+}
 try{const {createCorridor}=await import('/static/corridor3d.js');
  hall=createCorridor({wrap:$('game'),canvas:$('cv'),labels:$('labels'),
-  onPick:p=>p.kind==='new'?openSetup():p.kind==='settings'?openSett():location.href='/r/'+p.id+'/'+Q,
+  onPick:p=>p.kind==='new'?openSetup():p.kind==='settings'?openSett():p.kind==='exit'?quitApp():location.href='/r/'+p.id+'/'+Q,
   onClose:async r=>{if(!confirm('Close "'+r.title+'"? Its agents will stop.'))return;
    const save=confirm('Save this meeting’s status for later? OK saves participants, conversation and shared screen. Cancel closes without a resumable save; minutes are kept.');
    const res=await fetch('/api/close/'+r.id+Q,{method:'POST',body:JSON.stringify({save})});if(!res.ok)alert('Could not close and save the meeting. Please try again.');refresh()}})}
@@ -275,9 +302,11 @@ if(new URLSearchParams(location.search).get('new'))openSetup();
 </script></body></html>"""
 
 
-def lobby_page(agents: list[dict], token: str) -> str:
-    info = [{"name": a["name"], "provider": a.get("provider", ""), "color": a.get("color", "#888"),
-             "role": a.get("role", ""), "face": agent_face(a)} for a in agents]
+def lobby_page(agents: list[dict], token: str, user_name: str = "", ask_name: bool = False) -> str:
+    info = [{"name": a["name"], "person": a.get("person") or a["name"], "provider": a.get("provider", ""), "color": a.get("color", "#888"),
+             "role": a.get("role", ""), "face": agent_face(a)} for a in instance_table(agents)]
     return (PAGE.replace("__AGENTS__", json.dumps(info).replace("</", "<\\/"))
             .replace("__TOKEN__", json.dumps(token)).replace("__HOSTS__", json.dumps(ssh_hosts()).replace("</", "<\\/"))
-            .replace("__CHAR__", _char_source()))
+            .replace("__CHAR__", _char_source())
+            .replace("__USERNAME__", json.dumps(user_name or "Berkin").replace("</", "<\\/"))
+            .replace("__ASKNAME__", "true" if ask_name else "false"))

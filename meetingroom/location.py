@@ -30,6 +30,13 @@ _SOCK_DIR = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
 _PICKER_CP = os.path.join(_SOCK_DIR, "mr-pick-%C")
 
 
+def safe_host(host: str) -> str:
+    """A destination must never be interpreted as an ssh option such as ProxyCommand."""
+    if host.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_.@:\[\]-]+", host):
+        raise ValueError("Invalid SSH host; use an alias, hostname, or user@hostname")
+    return host
+
+
 def rpath(p: str) -> str:
     """Quote a remote path for sh, keeping a leading ~ expandable."""
     p = (p or "~").strip()
@@ -59,6 +66,7 @@ def ssh_hosts() -> list[str]:
 
 
 def _ssh(host: str, script: str, timeout: float = 25, cp: str = _PICKER_CP, stdin: str | None = None):
+    safe_host(host)
     cmd = ["ssh", *SSH_OPTS, "-o", "ControlMaster=auto", "-o", f"ControlPath={cp}", "-o", "ControlPersist=120",
            host, login_sh(script)]
     return subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout,
@@ -83,6 +91,8 @@ def list_dirs(path: str, host: str | None = None) -> dict:
     try:
         r = _ssh(host, f"cd -- {rpath(path)} && echo \"DIR=$(pwd)\" && "
                        "for d in */; do [ -d \"$d\" ] && echo \"D=${d%/}\"; done 2>/dev/null | head -400")
+    except ValueError as e:
+        return {"error": str(e)}
     except subprocess.TimeoutExpired:
         return {"error": f"ssh {host}: timed out"}
     kv = [l.split("=", 1) for l in r.stdout.splitlines() if l.startswith(("DIR=", "D="))]
@@ -101,6 +111,8 @@ def probe(host: str, path: str) -> dict:
               "[ -x \"$d/$t\" ] && p=$d/$t && break; done; echo \"BIN_$t=$p\"; done")
     try:
         r = _ssh(host, script)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"ssh {host}: timed out"}
     kv = _kv(r.stdout)
@@ -169,6 +181,7 @@ class Location:
     def connect(self, hub_port: int, token: str, tag: str = "") -> None:
         """Open the master connection with a reverse tunnel to the hub and install the bridge.
         `tag` (the room id) keeps two rooms on the same host on separate master connections."""
+        safe_host(self.host)
         self.cp = os.path.join(_SOCK_DIR, f"mr-{os.getpid()}{'-' + tag if tag else ''}-%C")
         err = ""
         for _ in range(6):
@@ -192,11 +205,15 @@ class Location:
 
     def close(self) -> None:
         if self.remote and self.cp:
+            safe_host(self.host)
             subprocess.run(["ssh", "-o", f"ControlPath={self.cp}", "-O", "exit", self.host],
                            capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
 
     def ssh_argv(self, agent: str, hub_port: int, exe: str, args: list[str], drop_key: str) -> list[str]:
         """Local argv that runs `exe args` in the project folder on the remote, wired to the hub."""
+        safe_host(self.host)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", drop_key):
+            raise ValueError("Invalid environment variable name")
         env = (f"unset {drop_key}; export MR_URL=http://127.0.0.1:{self.rport}{self.url_base} MR_HOST=127.0.0.1:{hub_port} "
                f"MR_AGENT={shlex.quote(agent)} MR_UPLOAD=1 MCP_TOOL_TIMEOUT={24 * 3600 * 1000}; "
                "MR_TOKEN=$(cat ~/.meetingroom/token); export MR_TOKEN; ")

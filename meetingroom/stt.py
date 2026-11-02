@@ -46,12 +46,14 @@ class Transcriber:
         self._terms = {_key(w) for w in [*vocab, *agent_names, user]} - {""}
         self.engine = None      # 'mlx' | 'faster' | 'echo'
         self.model = None
+        self.vad = None
         self.status = "off" if self.wanted == "browser" else "loading"
         self.detail = ""
         self._lock = threading.Lock()
 
     def public(self) -> dict:
-        return {"status": self.status, "engine": self.engine, "model": self.model_name, "detail": self.detail}
+        return {"status": self.status, "engine": self.engine, "model": self.model_name, "detail": self.detail,
+                "live": self.status == "ready" and (self.vad is not None or self.engine == "echo")}
 
     # ---------------- loading (runs in a background thread at startup)
     def load(self):
@@ -65,6 +67,14 @@ class Transcriber:
             self.engine, self.status = "echo", "ready"
             return
         try:
+            try:
+                from silero_vad import load_silero_vad
+                if ("vad", "silero") not in _MODELS:
+                    _MODELS["vad", "silero"] = load_silero_vad(onnx=True)
+                self.vad = _MODELS["vad", "silero"]
+            except Exception as e:
+                self.detail = f"Live dictation disabled: speech detector unavailable ({e}). Batch dictation still works."
+                print(f"  voice: {self.detail}", flush=True)
             if platform.system() == "Darwin" and platform.machine() == "arm64":
                 try:
                     import mlx_whisper  # noqa: F401
@@ -182,10 +192,25 @@ class Transcriber:
     def transcribe(self, audio: np.ndarray, prev: str = "") -> str:
         if self.status != "ready":
             raise RuntimeError(f"Whisper not ready ({self.status})")
-        audio = self.trim_silence(audio)
+        if audio.ndim != 1 or not np.isfinite(audio).all():
+            raise ValueError("Audio must be finite mono PCM")
         if len(audio) < SAMPLE_RATE * 0.3:
             return ""
         with _RUN_LOCK:
+            if self.vad is not None:
+                from silero_vad import get_speech_timestamps
+                import torch
+                speech = get_speech_timestamps(torch.from_numpy(audio.copy()), self.vad,
+                    sampling_rate=SAMPLE_RATE, threshold=0.6, min_speech_duration_ms=250,
+                    min_silence_duration_ms=500, speech_pad_ms=300)
+                if not speech:
+                    return ""
+                # Keep pauses and word boundaries; never concatenate isolated VAD chunks.
+                audio = audio[speech[0]["start"]:speech[-1]["end"]]
+            else:
+                audio = self.trim_silence(audio)
+            if len(audio) < SAMPLE_RATE * 0.3:
+                return ""
             text = self.strip_term_lists(self.clean(self._run(audio, prev).strip()))
         if not re.search(r"\w", text):   # only punctuation left ('.', '...')
             return ""

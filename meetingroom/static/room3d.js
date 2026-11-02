@@ -191,7 +191,10 @@ function buildRoom(scene) {
   box(0.26, 0.06, 0.2, 0x7d2a22, -0.62, 0.8, -0.3, scene); box(0.24, 0.05, 0.19, 0x2d4a3a, -0.62, 0.855, -0.3, scene);
 
   // chair at the keyboard
-  makeChair(scene, SEAT, Math.PI);
+  const pcChair = makeChair(scene, SEAT, Math.PI);
+  const seatMeshes = [];
+  pcChair.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "seat" }; seatMeshes.push(o); } });
+  scene.userData.seatMeshes = seatMeshes;
 
   return { screen, term, mon };
 }
@@ -204,7 +207,24 @@ function buildRoom(scene) {
 // bone indices
 const B = { root: 0, spine: 1, head: 2, shL: 3, elL: 4, shR: 5, elR: 6, thL: 7, knL: 8, thR: 9, knR: 10 };
 
+function disposeObject(root) {
+  const geometries = new Set(), materials = new Set(), textures = new Set(), skeletons = new Set();
+  root.traverse(o => {
+    if (o.geometry) geometries.add(o.geometry);
+    if (o.skeleton) skeletons.add(o.skeleton);
+    for (const m of (Array.isArray(o.material) ? o.material : o.material ? [o.material] : [])) {
+      materials.add(m);
+      for (const value of Object.values(m)) if (value && value.isTexture) textures.add(value);
+    }
+  });
+  for (const s of skeletons) s.dispose();
+  for (const t of textures) t.dispose();
+  for (const g of geometries) g.dispose();
+  for (const m of materials) m.dispose();
+}
+
 function buildChar(color, face, pants) {
+  let disposed = false;
   const C = (h) => new THREE.Color(h);
   const SWEATER = C(color), SKIN = C(face ? face.skin : "#d8a890"), HAIR = C(face ? face.hair : "#3a2a20"),
         PANTS = C(pants), SHOE = C(0x231a14);
@@ -357,6 +377,7 @@ function buildChar(color, face, pants) {
   const bodyMat = new THREE.MeshLambertMaterial({ vertexColors: true });
   const faceMat = new THREE.MeshLambertMaterial({ color: SKIN, emissive: 0x30241a });
   if (face) texLoader.load(new URL("./faces/" + face.file, import.meta.url).href, t => {
+    if (disposed) { t.dispose(); return; }
     t.magFilter = t.minFilter = THREE.NearestFilter; t.colorSpace = THREE.SRGBColorSpace;
     faceMat.map = t; faceMat.color.set(0xffffff); faceMat.needsUpdate = true;
   });
@@ -405,7 +426,14 @@ function buildChar(color, face, pants) {
   // invisible, generous pick volume (raycasting a skinned mesh is slow and fiddly)
   const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 1.7, 8), new THREE.MeshBasicMaterial());
   hit.position.y = 0.85; hit.visible = false; group.add(hit);
-  return { root: group, outline, hit, bodyMat, upper: spine, head, armL: shL, armR: shR, elbowL: elL, elbowR: elR, legL: thL, legR: thR, kneeL: knL, kneeR: knR };
+  // A captain's cap identifies agents with supervisor permissions and follows head motion.
+  const leaderHat = new THREE.Group(); head.add(leaderHat); leaderHat.visible = false;
+  box(0.34, 0.025, 0.3, 0x172337, 0, 0.375, 0.025, leaderHat);
+  box(0.26, 0.105, 0.23, 0x263f63, 0, 0.435, -0.005, leaderHat);
+  box(0.265, 0.025, 0.235, 0xe6b84d, 0, 0.393, -0.005, leaderHat);
+  box(0.055, 0.055, 0.012, 0xffd86b, 0, 0.438, 0.116, leaderHat);
+  return { root: group, outline, hit, bodyMat, upper: spine, head, leaderHat, armL: shL, armR: shR, elbowL: elL, elbowR: elR, legL: thL, legR: thR, kneeL: knL, kneeR: knR,
+    dispose() { if (!disposed) { disposed = true; disposeObject(group); } } };
 }
 
 // ---------------------------------------------------------------- homography (sharp DOM onto the CRT)
@@ -421,8 +449,36 @@ function quadTransform(w, h, dst) {
 
 // ---------------------------------------------------------------- public API
 // ---------------- jukebox: tiny WebAudio lobby-music synth (no assets)
-function createJukebox() {
-  let ctx = null, master = null, timer = null, nextT = 0, step = 0, playing = false;
+function createJukebox(saved = {}, onChange = () => {}) {
+  let ctx = null, master = null, timer = null, nextT = 0;
+  let step = Number.isSafeInteger(saved.step) && saved.step >= 0 ? saved.step : 0;
+  let playing = saved.playing === true;
+  // Restored audio may need the first user gesture under browser autoplay rules.
+  function resume() {
+    if (!playing) return;
+    try {
+      if (!ctx) { ctx = new (window.AudioContext || window.webkitAudioContext)(); master = ctx.createGain(); master.gain.value = 0; master.connect(ctx.destination); }
+      ctx.resume().then(() => {
+        if (!playing || timer !== null || ctx.state !== "running") return;
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setTargetAtTime(volume(), ctx.currentTime, 0.05);
+        nextT = ctx.currentTime + 0.05; schedule(); timer = setInterval(schedule, 100);
+      }).catch(() => {});
+    } catch (e) { /* Audio unavailable; retain the user's on/off preference. */ }
+  }
+  for (const event of ["pointerdown", "keydown"]) document.addEventListener(event, resume, { passive: true });
+  function volume() {
+    try {
+      const v = parseFloat(localStorage.getItem("mr_musicvol"));
+      return v >= 0 && v <= 1 ? v : 0.5;
+    } catch (e) { return 0.5; }
+  }
+  window.addEventListener("storage", e => {
+    if ((e.key === "mr_musicvol" || e.key === null) && master && playing) {
+      master.gain.cancelScheduledValues(ctx.currentTime);
+      master.gain.setTargetAtTime(volume(), ctx.currentTime, 0.05);
+    }
+  });
   const BPM = 84, B = 60 / BPM;
   const f = m => 440 * Math.pow(2, (m - 69) / 12);
   // Cmaj7 - Am7 - Dm7 - G7, one bar each (4 beats)
@@ -443,19 +499,31 @@ function createJukebox() {
       nextT += B / 2; step++;
     }
   }
+  if (playing) resume();
   return {
     get playing() { return playing; },
+    snapshot() { return { playing, step }; },
     toggle() {
-      if (!ctx) { ctx = new (window.AudioContext || window.webkitAudioContext)(); master = ctx.createGain(); master.gain.value = 0.5; master.connect(ctx.destination); }
-      if (playing) { playing = false; clearInterval(timer); master.gain.setTargetAtTime(0, ctx.currentTime, 0.15); return; }
-      ctx.resume(); master.gain.cancelScheduledValues(ctx.currentTime); master.gain.setTargetAtTime(0.5, ctx.currentTime, 0.05);
-      playing = true; nextT = ctx.currentTime + 0.05; step = 0; schedule(); timer = setInterval(schedule, 100);
+      playing = !playing;
+      if (playing) resume();
+      else {
+        clearInterval(timer); timer = null;
+        if (master) master.gain.setTargetAtTime(0, ctx.currentTime, 0.15);
+      }
+      onChange();
     },
   };
 }
 
 
 export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, overlayH = 600, onPick = () => {}, onFocusChange = () => {} }) {
+  // One snapshot per room in this browser; never restore server-owned status.
+  const stateKey = "mr_roomstate_v1:" + location.pathname.replace(/\/+$/, "");
+  let saved = {};
+  try {
+    const value = JSON.parse(localStorage.getItem(stateKey));
+    if (value && value.version === 1) saved = value;
+  } catch (e) { /* Storage may be unavailable or contain an older/corrupt value. */ }
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: true });
   renderer.setPixelRatio(1);
   const scene = new THREE.Scene();
@@ -481,8 +549,8 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   const camLook = new THREE.Vector3();
 
   const chars = new Map();       // name -> state
-  let seatOwner = null;
-  const typingAnyone = () => [...chars.values()].some(c => c.busy && c.arrived);
+  let seatOwner = typeof saved.seatOwner === "string" ? saved.seatOwner : null;
+  const typingAnyone = () => [...chars.values()].some(c => c.working && c.arrived);
 
   function resize() {
     const r = wrap.getBoundingClientRect();
@@ -493,16 +561,29 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   new ResizeObserver(resize).observe(wrap); resize();
 
   function setAgents(list) {
+    const names = new Set(list.map(a => a.name));
+    for (const [name, c] of [...chars]) {          // someone left: take them and their chair out of the room
+      if (names.has(name)) continue;
+      scene.remove(c.rig.root); if (c.chair) scene.remove(c.chair); c.el.remove();
+      c.rig.dispose(); if (c.chair) disposeObject(c.chair);
+      if (seatOwner === name) seatOwner = null;
+      leanSpots.delete(name);
+      if (tagHover === name) tagHover = null;
+      chars.delete(name);
+    }
     list.forEach((a, i) => {
       let c = chars.get(a.name);
       if (!c) {
+        const taken = new Set([...chars.values()].map(x => x.idx));
+        const sv = saved.agents && Object.hasOwn(saved.agents, a.name) ? saved.agents[a.name].idx : null;
+        i = Number.isInteger(sv) && !taken.has(sv) ? sv : (() => { let k = 0; while (taken.has(k)) k++; return k; })();
         const fid = a.face || FACE_ORDER[[...a.name].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % FACE_ORDER.length];   // server sends a fixed face; name hash only as fallback
         const rig = buildChar(new THREE.Color(a.color).getHex(), FACES[(fid - 1) % Math.max(1, FACES.length)] || null, PANTS[i % PANTS.length]);
         scene.add(rig.root);
         const home = homeFor(i);
         rig.root.position.copy(home);
         const chairYaw = lerpAngle(Math.atan2(-0.2 - home.x, -0.2 - home.z), Math.atan2(ROOM_POS.x - home.x, ROOM_POS.z - home.z), 0.55);
-        makeChair(scene, home, chairYaw);
+        const chair = makeChair(scene, home, chairYaw);
         const el = document.createElement("div"); el.className = "lbl";
         el.innerHTML = `<div class="bubble"></div><div class="tag"><i style="background:${a.color}"></i><b></b><span></span></div>`;
         labels.appendChild(el);
@@ -511,15 +592,31 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
         tag.addEventListener("mouseenter", () => { tagHover = a.name; });
         tag.addEventListener("mouseleave", () => { if (tagHover === a.name) tagHover = null; });
         tag.addEventListener("click", e => { e.stopPropagation(); if (!focus) onPick({ kind: "agent", name: a.name, x: e.clientX, y: e.clientY }); });
-        c = { name: a.name, rig, home, chairYaw, pos: rig.root.position, yaw: Math.PI, el, idx: i, phase: Math.random() * 6,
+        c = { name: a.name, rig, chair, home, chairYaw, pos: rig.root.position, yaw: Math.PI, el, idx: i, phase: Math.random() * 6,
               sit: 0, lean: 0, armX: 0, legX: 0, walk: 0, saying: null, sayUntil: 0, arrived: false, lastActive: performance.now(), doze: 0 };
+        const prior = saved.agents && Object.hasOwn(saved.agents, a.name) ? saved.agents[a.name] : null;
+        if (prior && Array.isArray(prior.pos) && prior.pos.length === 3 && prior.pos.every(Number.isFinite)
+            && Math.abs(prior.pos[0]) < 5 && Math.abs(prior.pos[2]) < 5) {
+          c.pos.fromArray(prior.pos);
+          for (const key of ["yaw", "sit", "lean", "walk", "phase", "doze"])
+            if (Number.isFinite(prior[key])) c[key] = prior[key];
+          c.atComputer = prior.atComputer === true;
+          c.arrived = prior.arrived === true;
+          if (Number.isFinite(prior.inactiveMs)) c.lastActive -= Math.max(0, prior.inactiveMs);
+          c.rig.root.rotation.y = c.yaw;
+        }
         chars.set(a.name, c);
       }
       c.status = a.status; c.activity = a.activity || ""; c.color = a.color;
+      c.rig.leaderHat.visible = a.supervisor === true;
       c.busy = a.status === "thinking" || a.status === "working";
+      c.working = a.status === "working";
+      // Stay at the PC through pauses between tools, until this turn ends.
+      c.atComputer = c.working || (!!c.atComputer && (c.busy || a.status === "waiting"));
       c.el.querySelector("b").textContent = a.person || a.name;
       c.el.querySelector("span").textContent = a.status === "offline" ? "offline" : a.status === "sleeping" ? "sleeping" : "";
     });
+    if (!chars.get(seatOwner)?.atComputer) seatOwner = null;
   }
 
   function say(name, text, ms) { const c = chars.get(name); if (!c) return; c.saying = text; c.sayUntil = ms == null ? Infinity : performance.now() + ms; }
@@ -544,7 +641,8 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
 
   // ---------------- per-frame character logic
   const camPos = new THREE.Vector3(), tmp = new THREE.Vector3();
-  const leanSpots = new Map();
+  const leanSpots = new Map(Array.isArray(saved.leanSpots)
+    ? saved.leanSpots.filter(v => Array.isArray(v) && typeof v[0] === "string" && Number.isInteger(v[1]) && v[1] >= -1 && v[1] < LEAN.length) : []);
   function updateChar(c, dt, t) {
     const r = c.rig, now = performance.now();
     if (c.saying && now > c.sayUntil) c.saying = null;
@@ -561,7 +659,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     camera.getWorldPosition(camPos);
     const camYaw = Math.atan2(camPos.x - c.pos.x, camPos.z - c.pos.z);
     let target = c.home, pose = "stand", faceYaw = lerpAngle(Math.atan2(-0.2 - c.pos.x, -0.2 - c.pos.z), camYaw, 0.55);   // idle: half toward you
-    if (c.busy || (waiting && (seatOwner === c.name || leanSpots.has(c.name)))) {
+    if (c.atComputer) {
       if (!seatOwner || seatOwner === c.name) { seatOwner = c.name; target = SEAT; pose = "sit"; faceYaw = Math.PI; leanSpots.delete(c.name); }
       else {
         if (!leanSpots.has(c.name)) { const used = new Set(leanSpots.values()); leanSpots.set(c.name, LEAN.findIndex((_, i) => !used.has(i))); }
@@ -592,7 +690,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     // pose blending
     const k = 1 - Math.pow(0.002, dt);
     c.sit = lerp(c.sit, pose === "sit" ? 1 : 0, k);
-    c.lean = lerp(c.lean, pose === "lean" ? 1 : pose === "sit" && c.busy ? 0.25 : 0, k);
+    c.lean = lerp(c.lean, pose === "lean" ? 1 : pose === "sit" && c.working ? 0.25 : 0, k);
     r.root.position.y = -0.26 * c.sit;
     const swing = moving ? Math.sin(c.walk) * 0.6 : 0;
     r.legL.rotation.x = lerp(0, -1.5, c.sit) + swing; r.legR.rotation.x = lerp(0, -1.5, c.sit) - swing;
@@ -604,7 +702,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     // arms
     // arm targets: shoulder (a*), elbow (e*), sideways (z*)
     let aL = moving ? -swing * 0.7 : 0.03, aR = moving ? swing * 0.7 : 0.03, eL = -0.18, eR = -0.18, zL = 0.07, zR = -0.07;
-    const typing = c.busy && !moving && !speaking;
+    const typing = c.working && !moving && !speaking;
     if (typing) {
       const sit = pose === "sit";
       aL = (sit ? -0.45 : -0.75) + Math.sin(t * 17 + c.phase) * 0.05; aR = (sit ? -0.45 : -0.75) + Math.sin(t * 17 + c.phase + 2.2) * 0.05;
@@ -643,7 +741,13 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     else if (speaking) { text = c.saying.length > 150 ? c.saying.slice(0, 147) + "…" : c.saying; cls += " say"; }
     else if (waiting) { text = "! needs your approval"; cls += " wait"; }
     else if (dz > 0.6 && !c.busy) { text = "z"; cls += " doze"; }
-    else if (c.busy) { text = "> " + (c.activity || (c.status === "thinking" ? "thinking…" : "working…")); cls += " work"; }
+    else if (c.busy) {
+      const activity = (c.activity || (c.status === "thinking" ? "Reviewing request…" : "Working…")).replace(/\s+/g, " ").trim();
+      const short = activity.split(" ").slice(0, 7).join(" ").slice(0, 64);
+      text = "> " + short + (short.length < activity.length ? "…" : "");
+      cls += " work";
+    }
+    bubble.title = c.busy && !speaking && !waiting ? "Activity from public messages and tool events" : "";
     if (bubble.textContent !== text) bubble.textContent = text;
     bubble.className = cls + (text ? "" : " hide");
     c.el.classList.toggle("off", offline);
@@ -665,7 +769,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   const monMeshes = []; mon.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "monitor" }; monMeshes.push(o); } });
   const monMats = monMeshes.map(o => o.material).filter(m => m.emissive);
   const doorMeshes = scene.userData.doorMeshes || [], doorMat = scene.userData.doorMat;
-  const jbx = scene.userData.jukebox, jukebox = createJukebox();
+  const jbx = scene.userData.jukebox, jukebox = createJukebox(saved.music || {}, saveState);
   let pointer = null, hovered = null, tagHover = null;
   canvas.addEventListener("pointermove", e => { pointer = { x: e.clientX, y: e.clientY }; });
   canvas.addEventListener("pointerleave", () => { pointer = null; });
@@ -674,7 +778,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const r = canvas.getBoundingClientRect();
     ndc.set((p.x - r.left) / r.width * 2 - 1, -((p.y - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const targets = [...monMeshes, ...doorMeshes, ...jbx.meshes]; for (const c of chars.values()) targets.push(c.rig.hit);
+    const targets = [...monMeshes, ...doorMeshes, ...jbx.meshes, ...(scene.userData.seatMeshes || [])]; for (const c of chars.values()) targets.push(c.rig.hit);
     const h = ray.intersectObjects(targets, false)[0];
     return h ? h.object.userData.pick : null;
   }
@@ -691,6 +795,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     for (const m of monMats) m.emissive.setHex(monOn ? 0x1e1a12 : 0x000000);
     if (doorMat) doorMat.emissive.setHex(p && p.kind === "door" ? 0x3a2a10 : 0x000000);
     jbx.wood.emissive.setHex(p && p.kind === "jukebox" ? 0x2a1a0a : 0x000000);
+    (scene.userData.seatMeshes || []).forEach(m => m.material.emissive && m.material.emissive.setHex(p && p.kind === "seat" ? 0x2a1a0a : 0x000000));
     canvas.style.cursor = p ? "pointer" : focus ? "zoom-out" : "";
   }
   canvas.addEventListener("click", e => {
@@ -708,6 +813,22 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     canvas.style.cursor = v ? "zoom-out" : "";
     onFocusChange(v);
   }
+
+  function saveState() {
+    // Wait for the first roster so navigation during startup cannot erase agents.
+    if (!chars.size) return;
+    const agents = Object.fromEntries([...chars].map(([name, c]) => [name, {
+      pos: c.pos.toArray(), yaw: c.yaw, sit: c.sit, lean: c.lean, walk: c.walk,
+      idx: c.idx, phase: c.phase, doze: c.doze, inactiveMs: performance.now() - c.lastActive,
+      atComputer: c.atComputer, arrived: c.arrived,
+    }]));
+    try { localStorage.setItem(stateKey, JSON.stringify({
+      version: 1, agents, seatOwner, leanSpots: [...leanSpots], music: jukebox.snapshot(),
+    })); } catch (e) { /* Full/disabled storage must not interrupt the room. */ }
+  }
+  window.addEventListener("pagehide", saveState);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveState(); });
+  setInterval(() => { if (!document.hidden) saveState(); }, 1000);
 
   const frameInterval = 1000 / 30;  // keep animation cost independent of monitor refresh rate
   let last = performance.now(), lastFrame = last;
@@ -740,7 +861,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   return {
     setAgents, say, quiet,
     nod(name) { const c = chars.get(name); if (c) c.nodUntil = performance.now() + 700; },
-    typingCount() { let n = 0; for (const c of chars.values()) if (c.busy && c.arrived && c.status !== "waiting") n++; return n; },
+    typingCount() { let n = 0; for (const c of chars.values()) if (c.working && c.arrived && !c.saying) n++; return n; },
     setScreen(active) { screenActive = active; overlay.style.display = active ? "block" : "none"; if (!active) lines.length = 0; },
     setFocus, get focused() { return focus; },
   };

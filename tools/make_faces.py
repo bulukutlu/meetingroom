@@ -27,6 +27,8 @@ def median_color(im, box):
 
 
 def main(args):
+    append = "--append" in args          # keep the existing faces, add the new photos after them
+    args = [a for a in args if a != "--append"]
     files = []
     for a in args:
         p = Path(a)
@@ -34,8 +36,9 @@ def main(args):
     if not files:
         sys.exit(__doc__)
     OUT.mkdir(parents=True, exist_ok=True)
-    meta = []
-    for i, f in enumerate(files, 1):
+    meta = json.loads((OUT / "faces.json").read_text()) if append and (OUT / "faces.json").exists() else []
+    start = len(meta) + 1
+    for i, f in enumerate(files, start):
         im = Image.open(f).convert("RGB")
         w, h = im.size
         face = im.crop((int(CROP[0] * w), int(CROP[1] * h), int(CROP[2] * w), int(CROP[3] * h)))

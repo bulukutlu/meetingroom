@@ -1,7 +1,8 @@
 # Meeting room participants.
 # NEVER put API keys here.
 
-user_name: Berkin
+# Your name is asked on first launch and editable in Settings (saved in <workspace>/profile.json).
+# user_name: Berkin      # optional fallback; the saved name wins
 
 # Everything the agents create lives here (one sub-folder per agent, plus
 # meetings/<date>/ with the transcript and every file shown on screen).
@@ -29,7 +30,7 @@ voice:
 # af_bella, af_nicole, bf_emma, bf_isabella.
 narration:
   engine: kokoro
-  speed: 1.1
+  speed: 1.3
 
 agents:
   # --- Claude Code agents: use your installed `claude` CLI and your claude.ai login.
@@ -40,7 +41,7 @@ agents:
     color: "#d97757"
     role: Lead analyst. Plans the work, does the heavier analysis and reviews others' results.
     approval: ask           # ask = every permission request becomes an approval card; auto = allow all
-    supervisor: true        # chains with this agent may run 3 round trips with others instead of 1 (hard cap, see MAX_HOPS_SUPERVISED)
+    # supervisor: true     # leader hat; normally set live in the room (agent menu / People list). Chains with this agent may run 3 round trips with others instead of 1 (hard cap, see MAX_HOPS_SUPERVISED)
     # person: Alejandro    # human name used to address this agent (voice or text); default is picked automatically
     # effort: high          # low | medium | high | xhigh | max; omit = medium. Also switchable live in the room.
     # face: 3               # override; default is fixed by model seniority (see FACE_BY_TIER in meetingroom/agents.py); new photos: python tools/make_faces.py <folder>

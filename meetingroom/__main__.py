@@ -30,6 +30,7 @@ from . import keys
 
 DEMO_CFG = {
     "user_name": "You",
+    "_demo": True,
     "workspace": "~/MeetingRoom-demo",
     "python": sys.executable,
     "agents": [
@@ -57,11 +58,16 @@ def load_cfg(path: str | None) -> dict:
 def main():
     ap = argparse.ArgumentParser(prog="meetingroom")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    clean = sub.add_parser("storage", help="Audit meeting storage; optionally compact without removing records")
+    clean.add_argument("--config")
+    clean.add_argument("--compact", action="store_true", help="Deduplicate archive copies and clear regenerable PDF page images; close the app first")
     r = sub.add_parser("run")
     r.add_argument("--config")
     r.add_argument("--port", type=int, default=8765)
     r.add_argument("--demo", action="store_true", help="key-free demo agents")
     r.add_argument("--no-browser", action="store_true")
+    r.add_argument("--launch-state", type=Path, default=Path(__file__).resolve().parent.parent / ".app-runtime.json",
+                   help=argparse.SUPPRESS)
     r.add_argument("--agents", help="comma-separated agent names to start (skips the picker page)")
     r.add_argument("--all", action="store_true", help="start every configured agent (skips the picker page)")
     r.add_argument("--project", help="project folder the meeting works in (remote path with --ssh)")
@@ -92,6 +98,17 @@ def main():
         for p in keys.PROVIDERS:
             v, src = keys.get_key(p)
             print(f"  {p:10s} {src:8s} {keys.mask(v)}")
+        return
+
+    if a.cmd == "storage":
+        from .storage import compact
+        cfg = load_cfg(a.config)
+        result = compact(Path(cfg["workspace"]).expanduser().resolve(), dry_run=not a.compact)
+        verb = "Reclaimed" if a.compact else "Reclaimable"
+        print(f"{verb}: {result['reclaimed_bytes'] / 1024**2:.1f} MiB "
+              f"(duplicate files {result['duplicate_bytes'] / 1024**2:.1f} MiB, "
+              f"PDF page cache {result['page_bytes'] / 1024**2:.1f} MiB).")
+        print("Meeting records, original outputs and model weights are preserved.")
         return
 
     cfg = DEMO_CFG if a.demo else load_cfg(a.config)
@@ -138,7 +155,9 @@ def main():
     factory = server.config.get_loop_factory()
     loop = factory() if factory else asyncio.new_event_loop()
     try:
-        loop.run_until_complete(server.serve())
+        from .launcher import serve
+        loop.run_until_complete(serve(server, a.launch_state,
+            f"http://127.0.0.1:{a.port}/?t={token}"))
     except KeyboardInterrupt:
         pass
     # Rooms are closed and minutes written by now. Don't wait for leftover worker threads
