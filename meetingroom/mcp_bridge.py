@@ -4,6 +4,8 @@
                      permission request becomes an approval card in the room
   share_to_screen  – put a file on the meeting's shared screen
   report_progress  – progress bar for long jobs
+  wake_me          – be woken later (timer / file / process end) to report on background work
+  say_now          – post an update mid-turn
 
 It only talks to the meeting-room hub on 127.0.0.1. The hub address, the
 per-run access token and the agent name arrive via environment variables
@@ -50,6 +52,21 @@ TOOLS = [
         },
     },
     {
+        "name": "wake_me",
+        "description": 'Ask the meeting room to wake you up later so you can speak again without being mentioned: use it after starting a long script/job, then end your turn. You get a new turn when ANY given condition is met: after_minutes elapsed, file_exists appears, or process pid_exited ends. note = what to check and report. Max 3 pending.',
+        "inputSchema": {
+            "type": "object",
+            "properties": {"note": {"type": "string"}, "after_minutes": {"type": "number"},
+                           "file_exists": {"type": "string"}, "pid_exited": {"type": "integer"}},
+            "required": ["note"],
+        },
+    },
+    {
+        "name": "say_now",
+        "description": 'Post a short progress update to the meeting right now, in the middle of your turn, without ending it. Use for important milestones during long work.',
+        "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+    },
+    {
         "name": "share_to_screen",
         "description": (
             "Show a file on the meeting's shared screen so everyone sees it. Supports images "
@@ -90,6 +107,11 @@ def call(name: str, args: dict) -> str:
     if name == "report_progress":
         try:
             return hub("/internal/progress", args).get("text", "ok")
+        except Exception as e:
+            return f"error: {e}"
+    if name in ("wake_me", "say_now"):
+        try:
+            return hub("/internal/wake" if name == "wake_me" else "/internal/say", args).get("text", "ok")
         except Exception as e:
             return f"error: {e}"
     if name == "share_to_screen":

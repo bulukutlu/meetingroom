@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .agents import agent_face, instance_table
+from .agents import MAX_COPIES, agent_face, agent_family_tier, instance_table
 from .location import ssh_hosts
 
 STATIC = Path(__file__).parent / "static"
@@ -66,7 +66,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  #sett .where{width:min(560px,100%);box-sizing:border-box;border:2px solid #000;box-shadow:4px 4px 0 #000;background:var(--panel);padding:14px 16px;margin-bottom:14px;font-family:var(--mono)}
  #sett h3{margin:0 0 8px;font:700 12px var(--mono);color:var(--amber);letter-spacing:.1em;text-transform:uppercase} #sett label.t{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:13px;color:var(--text)} #sett .d{color:var(--dim);font-size:11px;margin:-3px 0 6px 26px} #sett input[type=range]{flex:1}
  .grid{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;max-width:1000px}
- .card{position:relative;width:140px;padding:8px 8px 10px;background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;
+ .card{position:relative;width:150px;padding:8px 8px 10px;background:linear-gradient(#241c15,#1b1510);border:2px solid var(--line2);border-radius:10px;
   cursor:pointer;user-select:none;transition:transform .15s,border-color .15s,opacity .2s,filter .2s;box-shadow:0 8px 22px #0008}
  .card:hover{transform:translateY(-4px)}
  .card .win{height:120px;border-radius:6px;overflow:hidden;background:radial-gradient(circle at 50% 30%,#4a3320,#1a120c 75%);border:1px solid var(--line)}
@@ -78,6 +78,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
  .role{color:var(--muted);font-size:11px;margin-top:2px;max-height:2.9em;overflow:hidden}
  .chair{position:absolute;top:8px;right:8px;font:700 10px ui-monospace,Menlo,monospace;letter-spacing:.08em;padding:3px 7px;border-radius:4px;background:#000a;color:var(--dim)}
  .on .chair{background:var(--c);color:#1a120c}
+ .fam{flex-basis:100%;font:700 12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--amber);border-bottom:1px solid var(--line);padding:6px 2px 4px;margin-top:10px;text-align:left}
+ .mdl{font:11px var(--mono);color:var(--accent);margin-top:2px;word-break:break-all}
  .qty{display:flex;align-items:center;gap:6px;margin-top:8px}.qty span{flex:1;text-align:center;font-size:12px;color:var(--muted)}
  .qty button{background:#2e241b;color:var(--text);border:2px solid #000;border-radius:6px;font:600 12px system-ui;padding:4px 9px;cursor:pointer}.qty button:hover{background:#3a2e22}
  .bar{margin-top:30px;display:flex;gap:14px;align-items:center}
@@ -120,7 +122,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
 <div class="where"><h3>Storage</h3><p id="storageInfo" style="font-size:12px">Checking reclaimable space…</p><button id="compactStorage" class="wbtn">Compact closed meetings now</button><p style="font-size:11px;color:var(--muted)">Meetings are compacted automatically when closed. History, original outputs and speech models are kept. Open meetings are left untouched.</p></div>
 <div class="bar"><span class="link" id="sback">&larr; Back to the corridor</span></div></div>
 <div id="welcome" style="display:none;position:fixed;inset:0;z-index:50;background:#0e0907f2;align-items:center;justify-content:center"><div class="where" style="margin:0;font-family:var(--mono);text-align:center"><h3>Welcome</h3><p style="margin:0 0 12px">What should the agents call you?</p><div class="wrow"><input id="wname" maxlength="40" autocomplete="off" spellcheck="false"><button class="wbtn" id="wok">Continue</button></div></div></div>
-<div id="setup"><h1>&#9679; New room</h1><h2>Who joins this meeting?</h2><p class="sub">Click a card to pull up a chair; every seat of a model has its own face and name.</p>
+<div id="setup"><h1>&#9679; New room</h1><h2>Who joins this meeting?</h2><p class="sub">Pick the exact models you want. Click a card to seat one, use + / &minus; for more of the same model; every seat has its own face and name.</p>
 <div class="grid" id="grid"></div>
 <div class="where">
  <h3>Where does the meeting take place?</h3>
@@ -144,11 +146,15 @@ await requireGraphics();
 const THREE=await import('/static/vendor/three.min.js');
 const FACES=await fetch('/static/faces/faces.json').then(r=>r.json()).catch(()=>[]);
 const MAXC=4;
-const cnt={};AGENTS.forEach(a=>cnt[a.name]=0);
-{let saved=JSON.parse(localStorage.getItem(KEY)||'null');if(!Array.isArray(saved))saved=AGENTS.map(a=>a.name);
- saved.forEach(n=>{if(n in cnt)cnt[n]=1});
- if(!Object.values(cnt).some(v=>v))AGENTS.filter(a=>!/-\\d+$/.test(a.name)).forEach(a=>cnt[a.name]=1)}
+const TYPES=[];{const m={};AGENTS.forEach(a=>{(m[a.type]=m[a.type]||(TYPES.push(m[a.type]={name:a.type,seats:[],head:a}),m[a.type])).seats.push(a)})}
+TYPES.sort((x,y)=>(x.head.family===y.head.family?0:x.head.family==='anthropic'?-1:1));
+const cnt={};TYPES.forEach(t=>cnt[t.name]=0);
+{const saved=JSON.parse(localStorage.getItem(KEY)||'null'),seat={};AGENTS.forEach(a=>seat[a.name]=a.type);
+ if(Array.isArray(saved))saved.forEach(n=>{if(n in seat)cnt[seat[n]]++});
+ TYPES.forEach(t=>cnt[t.name]=Math.min(MAXC,cnt[t.name]));
+ if(!Object.values(cnt).some(v=>v))TYPES.filter(t=>!t.head.extra).forEach(t=>cnt[t.name]=1)}
 const total=()=>Object.values(cnt).reduce((x,y)=>x+y,0);
+const MAXT=12;
 const $=id=>document.getElementById(id), grid=$('grid'), busts=[];
 let built=false;
 const texLoader=new THREE.TextureLoader();
@@ -164,21 +170,28 @@ function bust(a,canvas){canvas.width=CW;canvas.height=CH;
  rig.armL.rotation.z=.06;rig.armR.rotation.z=-.06;
  cam.position.set(0,1.7,2.3);cam.lookAt(0,1.45,0);
  const ph=Math.random()*6;
- busts.push(t=>{const on=cnt[a.name]>0;rig.root.rotation.y=Math.sin(t*.7+ph)*(on?.5:.2);
+ busts.push(t=>{const on=cnt[a.type]>0;rig.root.rotation.y=Math.sin(t*.7+ph)*(on?.5:.2);
   rig.head.rotation.x=Math.sin(t*1.1+ph)*.04+(on?0:.3);rig.upper.rotation.x=on?0:.08;rig.root.position.y=Math.sin(t*2+ph)*(on?.008:0);
   cam.aspect=CW/CH;cam.updateProjectionMatrix();r.render(sc,cam);ctx.clearRect(0,0,CW,CH);ctx.drawImage(r.domElement,0,0)});
 }
 function buildCards(){if(built)return;built=true;
-AGENTS.forEach(a=>{const c=document.createElement('div');c.className='card';c.style.setProperty('--c',a.color);
- c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>'+esc(a.person)+' <span style="font-weight:400;color:var(--muted)">@'+esc(a.name)+'</span></div><div class="role">'+esc(a.provider)+(a.role?' - '+esc(a.role):'')+'</div>';
- c.onclick=()=>{if(cnt[a.name])cnt[a.name]=0;else if(total()<12)cnt[a.name]=1;draw()};grid.append(c);a.el=c;
+const FAM={anthropic:'Anthropic',openai:'OpenAI'};let last='';
+TYPES.forEach(t=>{const a=t.head;
+ if(a.family!==last){last=a.family;const h=document.createElement('div');h.className='fam';h.textContent=FAM[a.family]||a.family;grid.append(h)}
+ const c=document.createElement('div');c.className='card';c.style.setProperty('--c',a.color);
+ c.innerHTML='<span class="chair"></span><div class="win"><canvas></canvas></div><div class="name"><i></i>'+esc(a.person)+' <span style="font-weight:400;color:var(--muted)">@'+esc(t.name)+'</span></div><div class="mdl">'+esc(a.model||'default model')+'</div><div class="role">'+esc(a.role||'')+'</div><div class="qty"><button data-d="-1">&minus;</button><span></span><button data-d="1">+</button></div>';
+ c.onclick=e=>{const b=e.target.closest('button');
+  if(b){const n=cnt[t.name]+(+b.dataset.d);if(n>=0&&n<=MAXC&&total()+(n-cnt[t.name])<=MAXT)cnt[t.name]=n}
+  else if(cnt[t.name])cnt[t.name]=0;else if(total()<MAXT)cnt[t.name]=1;draw()};
+ grid.append(c);t.el=c;
  try{bust(a,c.querySelector('canvas'))}catch(e){c.querySelector('.win').textContent=''}});
 draw()}
-function draw(){if(!built)return;AGENTS.forEach(a=>{const n=cnt[a.name],on=n>0;a.el.classList.toggle('on',on);a.el.querySelector('.chair').textContent=on?'SEATED':'EMPTY'});
+function draw(){if(!built)return;TYPES.forEach(t=>{const n=cnt[t.name],on=n>0;t.el.classList.toggle('on',on);t.el.querySelector('.chair').textContent=on?'SEATED':'EMPTY';
+ t.el.querySelector('.qty span').textContent=on?t.seats.slice(0,n).map(s=>s.person).join(', '):'empty'});
  $('go').disabled=!total();$('go').textContent='Open room ('+total()+' seated)'}
-$('all').onclick=()=>{const any=total()>0;AGENTS.forEach(a=>cnt[a.name]=any||/-\\d+$/.test(a.name)?0:1);draw()};
+$('all').onclick=()=>{const any=total()>0;TYPES.forEach(t=>cnt[t.name]=!any&&!t.head.extra?1:0);draw()};
 (function loop(t){if(document.body.classList.contains('setup'))busts.forEach(b=>b(t/1000));requestAnimationFrame(loop)})(0);
-$('go').onclick=async()=>{const names=AGENTS.flatMap(a=>Array(cnt[a.name]).fill(a.name)), w=where();
+$('go').onclick=async()=>{const names=TYPES.flatMap(t=>t.seats.slice(0,cnt[t.name]).map(x=>x.name)), w=where();
  if(w.kind!=='default'&&!w.path&&w.kind==='local'){status('Choose a project folder (or pick “Agents’ own folders”).','bad');return}
  if(w.kind==='ssh'&&!w.host){status('Enter an SSH host.','bad');return}
  localStorage.setItem(KEY,JSON.stringify(names));$('go').disabled=true;$('go').textContent=w.kind==='ssh'?'Connecting...':'Starting...';
@@ -305,8 +318,14 @@ if(new URLSearchParams(location.search).get('new'))openSetup();
 
 
 def lobby_page(agents: list[dict], token: str, user_name: str = "", ask_name: bool = False) -> str:
-    info = [{"name": a["name"], "person": a.get("person") or a["name"], "provider": a.get("provider", ""), "color": a.get("color", "#888"),
-             "role": a.get("role", ""), "face": agent_face(a)} for a in instance_table(agents)]
+    seats = instance_table(agents)
+    info = []
+    for i, c in enumerate(agents):
+        fam = agent_family_tier(c)[0]
+        for a in seats[i * MAX_COPIES:(i + 1) * MAX_COPIES]:
+            info.append({"name": a["name"], "type": c["name"], "family": fam, "model": c.get("model") or "", "extra": bool(c.get("extra")),
+                         "person": a.get("person") or a["name"], "provider": a.get("provider", ""), "color": a.get("color", "#888"),
+                         "role": c.get("role", ""), "face": agent_face(a)})
     return (PAGE.replace("__AGENTS__", json.dumps(info).replace("</", "<\\/"))
             .replace("__TOKEN__", json.dumps(token)).replace("__HOSTS__", json.dumps(ssh_hosts()).replace("</", "<\\/"))
             .replace("__CHAR__", _char_source())

@@ -55,6 +55,8 @@ def load_cfg(path: str | None) -> dict:
     ws = Path(os.path.expanduser(str(cfg.get("workspace") or "workspace")))
     cfg["workspace"] = str(ws if ws.is_absolute() else ROOT / ws)   # relative = inside the repo, never the cwd
     cfg["python"] = os.path.expanduser(cfg.get("python") or sys.executable)
+    from .models import extend_catalog
+    cfg["agents"] = extend_catalog(cfg.get("agents", []))   # every model variant becomes a seatable type
     return cfg
 
 
@@ -136,7 +138,7 @@ def main():
     initial = None
     # --agents / --all / --project / --ssh (or a single configured agent) open a first room straight away;
     # otherwise you start in the corridor and open rooms from there.
-    if a.agents or a.all or a.project or a.ssh or len(all_agents) < 2:
+    if a.agents or a.all or a.project or a.ssh or len([x for x in all_agents if not x.get("extra")]) < 2:
         loc = Location.from_dict({"path": a.project or "", "host": a.ssh or ""})
         if a.ssh and not a.project:
             loc.path = "~"
@@ -149,7 +151,7 @@ def main():
                 sys.exit(f"unknown agent(s): {', '.join(bad)} (configured: {', '.join(sorted(known))})")
             names = want      # repeats / "sonnet-2" make extra chairs of that model
         else:
-            names = [x["name"] for x in all_agents]
+            names = [x["name"] for x in all_agents if not x.get("extra")]
         initial = {"names": names, "location": loc, "rid": uuid.uuid4().hex[:6]}
         url = f"http://127.0.0.1:{a.port}/r/{initial['rid']}/?t={token}"
     app = create_hub(cfg, a.port, token, initial)

@@ -76,6 +76,17 @@ TOOL_SPECS = [
         },
     },
     {
+        "name": "wake_me",
+        "description": 'Ask the meeting room to wake you up later so you can speak again without being mentioned: use it after starting a long script/job, then end your turn. You get a new turn when ANY given condition is met: after_minutes elapsed, file_exists appears, or process pid_exited ends. note = what to check and report. Max 3 pending.',
+        "schema": {"type": "object", "properties": {"note": {"type": "string"}, "after_minutes": {"type": "number"},
+                   "file_exists": {"type": "string"}, "pid_exited": {"type": "integer"}}, "required": ["note"]},
+    },
+    {
+        "name": "say_now",
+        "description": 'Post a short progress update to the meeting right now, in the middle of your turn, without ending it. Use for important milestones during long work.',
+        "schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+    },
+    {
         "name": "report_progress",
         "description": (
             "Show a progress bar on the meeting's shared screen for a long job (expected > 5 minutes). "

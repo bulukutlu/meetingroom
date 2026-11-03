@@ -32,13 +32,18 @@ FACE_BY_TIER = {
 }
 
 
+def _openai_tier(m: str) -> int:
+    """0 small (nano, luna), 1 mid (mini, spark, terra), 2 large (sol, astra, default)."""
+    return 0 if ("nano" in m or "luna" in m) else 1 if ("mini" in m or "spark" in m or "terra" in m) else 2
+
+
 def default_face(provider: str, model: str | None) -> int:
     m = (model or "").lower()
     if provider in ("claude-code", "anthropic"):
         tier = 0 if "haiku" in m else 1 if "sonnet" in m else 2   # opus, fable, unknown -> senior
         return FACE_BY_TIER["anthropic"][tier]
     if provider in ("codex", "openai"):
-        tier = 0 if "nano" in m else 1 if ("mini" in m or "spark" in m) else 2
+        tier = _openai_tier(m)
         return FACE_BY_TIER["openai"][tier]
     return 4
 
@@ -77,12 +82,12 @@ CLONE_FACES = [4, 6, 3, 1, 2, 5, 8, 9, 11, 7, 10, 12, 13]
 FEMALE_CLONE_FACES = [1, 2, 5, 7, 10, 12, 13]   # OpenAI agents are always female
 # Names per model family and tier (0 small, 1 mid, 2 large), per gender. Override with `person:` in agents.yaml.
 NAMES = {
-    ("anthropic", 0): {"m": ["Rafael", "Tomasz", "Hiro", "Lucas"], "f": ["Amara", "Nadia", "Chiara", "Freya"]},
-    ("anthropic", 1): {"m": ["Mateo", "Omar", "Pavel", "Dmitri"], "f": ["Priya", "Leila", "Elena", "Zainab"]},
-    ("anthropic", 2): {"m": ["Alejandro", "Kenji", "Henrik", "Matthias"], "f": ["Sofia", "Katarina", "Imani", "Greta"]},
-    ("openai", 0): {"f": ["Mei", "Yara", "Ottilie", "Bianca", "Anneli", "Rosa"]},
-    ("openai", 1): {"f": ["Sunniva", "Camila", "Aiko", "Liv", "Marta", "Selma"]},
-    ("openai", 2): {"f": ["Helga", "Ingrid", "Margarethe", "Noor", "Valentina", "Astrid"]},
+    ("anthropic", 0): {"m": ["Rafael", "Tomasz", "Hiro", "Lucas", "Anders", "Joaquin", "Emre", "Stefan"], "f": ["Amara", "Nadia", "Chiara", "Freya", "Ines", "Mirela", "Tamar", "Ewa"]},
+    ("anthropic", 1): {"m": ["Mateo", "Omar", "Pavel", "Dmitri", "Rohan", "Felix", "Idris", "Andrei"], "f": ["Priya", "Leila", "Elena", "Zainab", "Marisol", "Agnes", "Soraya", "Dalia"]},
+    ("anthropic", 2): {"m": ["Alejandro", "Kenji", "Henrik", "Matthias", "Viktor", "Raphael", "Anselm", "Tobias"], "f": ["Sofia", "Katarina", "Imani", "Greta", "Odalys", "Beatrix", "Liesel", "Mirabel"]},
+    ("openai", 0): {"f": ["Mei", "Yara", "Ottilie", "Bianca", "Anneli", "Rosa", "Hana", "Petra", "Alma", "Dorothea", "Noemi", "Wilma"]},
+    ("openai", 1): {"f": ["Sunniva", "Camila", "Aiko", "Liv", "Marta", "Selma", "Thea", "Ilse", "Josefina", "Kalinda", "Runa", "Vera"]},
+    ("openai", 2): {"f": ["Helga", "Ingrid", "Margarethe", "Noor", "Valentina", "Astrid", "Brigitte", "Cordelia", "Daria", "Esther", "Frida", "Gunhild"]},
 }
 # Kokoro voices by gender, handed out in order so loaded agents sound different.
 VOICES = {"m": ["am_michael", "bm_george", "am_adam", "am_puck", "bm_daniel", "am_eric", "am_liam"],
@@ -97,7 +102,7 @@ def agent_family_tier(spec: dict) -> tuple[str, int]:
         prov = "openai" if any(k in n for k in ("gpt", "codex", "openai")) else "anthropic"
         m = n
     if prov in ("codex", "openai"):
-        return "openai", 0 if "nano" in m else 1 if ("mini" in m or "spark" in m) else 2
+        return "openai", _openai_tier(m)
     return "anthropic", 0 if "haiku" in m else 1 if "sonnet" in m else 2
 
 
@@ -271,6 +276,7 @@ class Agent:
         self.seen = 0              # index into room.messages already given to this agent
         self.pending_context = ""  # context not yet committed (kept if a turn fails)
         self.queue: asyncio.Queue = asyncio.Queue()
+        self.wake_notes: list[str] = []   # background wake-ups waiting to be handled in the next turn
         self.requesters: set[str] = set()   # agents who handed work to this one since its last turn
         self.current: asyncio.Task | None = None
         self.backend = None
@@ -332,6 +338,7 @@ How the meeting works:
 {location_note(self)}- Show results with share_to_screen (plots as PNG/SVG, interactive pages as self-contained HTML, tables as CSV/markdown). Prefer showing over describing. For multiple related outputs, call share_to_screen with paths: ["plot.png", "summary.md"] and a title to show a clickable folder; use path for a single file.
 - If a tool call is denied, do not retry it unchanged; adapt or ask.
 - For any job you expect to take more than 5 minutes, call report_progress with task (short title), stage (what is happening now), step/steps or percent, and eta_minutes; update it at each stage and finish with done=true. It shows as a progress bar on the shared screen.
+- Long job (script, download, fit) running in the background? Start it, then call wake_me (after_minutes, or file_exists / pid_exited) and end your turn; you will get a new turn to report the result even if nobody mentions you. Use say_now for an important milestone mid-turn.
 """
 
     # ---------- turn handling ----------
@@ -422,7 +429,11 @@ How the meeting works:
         reqs = sorted(self.requesters)
         self.requesters = set()
         handle = " ".join(f"@{r}" for r in reqs)
+        wakes, self.wake_notes = self.wake_notes, []
         prompt = (
+            "BACKGROUND WAKE-UP: you asked to be woken. Check on it and tell the room the result in one or two sentences "
+            "(if the job is still running, call wake_me again and say nothing). Reminders you set:\n- " + "\n- ".join(wakes) + "\n\n" if wakes else ""
+        ) + (
             "New in the meeting transcript:\n" + (ctx or "(nothing new)\n") +
             f"\nYou ({self.person}, @{self.name}) were mentioned. Do/answer only what was asked of YOU.\n\n{TURN_REMINDER}"
             + (f"\n\nYou were asked by {handle}: START your reply with {handle} so they are notified and can react." if reqs else "")
@@ -454,6 +465,10 @@ How the meeting works:
             if not ok:
                 await self.set_status("working", f"denied: {name}")
                 return "The user DENIED this action. Do not retry it unchanged."
+        if name in ("wake_me", "say_now"):
+            out = await (self.room.wake_me(self, args) if name == "wake_me" else self.room.say_now(self, str(args.get("text") or "")))
+            self.trace("tool_result", out, tool=name)
+            return out
         if name == "report_progress":
             out = await self.room.report_progress(self, args)
             self.trace("tool_result", out, tool=name)
@@ -513,6 +528,8 @@ def cli_meeting_prompt(a: Agent, tools_hint: str) -> str:
         '\nFor any job you expect to take more than 5 minutes, call the meetingroom report_progress tool with task (short title), '
         'stage (what is happening now), step/steps or percent, and eta_minutes; update it at each stage and finish with done=true. '
         'It shows as a progress bar on the shared screen.'
+        '\nLong job running in the background? Start it, then call the meetingroom wake_me tool (after_minutes, or file_exists / pid_exited) and end your turn; '
+        'you get a new turn to report the result even if nobody mentions you. say_now posts an important milestone mid-turn.'
     )
 
 
@@ -659,7 +676,8 @@ class ClaudeCodeBackend:
                "--append-system-prompt", self._meeting_prompt(),
                "--mcp-config", self.mcp_config,
                "--permission-prompt-tool", "mcp__meetingroom__approve",
-               "--allowedTools", "mcp__meetingroom__share_to_screen", "mcp__meetingroom__report_progress"]
+               "--allowedTools", "mcp__meetingroom__share_to_screen", "mcp__meetingroom__report_progress",
+               "mcp__meetingroom__wake_me", "mcp__meetingroom__say_now"]
         if a.model:
             cmd += ["--model", a.model]
         if a.effort:
@@ -827,6 +845,8 @@ class CodexBackend:
                 "-c", "mcp_servers.meetingroom.tool_timeout_sec=86400",
                 "-c", 'mcp_servers.meetingroom.tools.share_to_screen.approval_mode="approve"',
                 "-c", 'mcp_servers.meetingroom.tools.report_progress.approval_mode="approve"',
+                "-c", 'mcp_servers.meetingroom.tools.wake_me.approval_mode="approve"',
+                "-c", 'mcp_servers.meetingroom.tools.say_now.approval_mode="approve"',
                 "-c", f"sandbox_mode={json.dumps(self.sandbox)}",
                 "-c", 'approval_policy="never"']
         if self.network:

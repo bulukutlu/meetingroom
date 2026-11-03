@@ -46,10 +46,20 @@ def handoff_names(text: str) -> set[str]:
     for m in HANDOFF_MENTIONS.finditer(text):
         names |= {n.lower() for n in MENTION.findall(m.group(1))}
     return names
-MAX_HOPS = 2  # you -> agent -> handoff -> one reply back, then it stops
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
+MAX_HOPS = 4  # two round trips: you -> A -> B -> A -> B -> A, then it stops (each agent answers up to twice)
 # Chains involving a supervisor agent (`supervisor: true` in agents.yaml) may run
-# 3 full round trips: user -> S -> W -> S -> W -> S -> W -> S, then it stops.
-MAX_HOPS_SUPERVISED = 6
+# 5 full round trips (a supervisor and a worker answer up to five times each), then it stops.
+MAX_HOPS_SUPERVISED = 10
 KINDS = {
     "image": {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"},
     "html": {".html", ".htm"},
@@ -114,6 +124,7 @@ class Room:
         self.recorder = Recorder(self.session_dir)
         self.messages: list[dict] = []
         self.shared: list[dict] = []
+        self.wakers: list[dict] = []   # pending background wake-ups of agents
         self.progress: dict[str, dict] = {}   # live progress bars of long tasks, keyed by agent|task
         self.files: dict[str, Path] = {}
         self.anchors: dict[str, dict] = {}   # marks you made on the shared screen
@@ -376,6 +387,62 @@ class Room:
                               "tts": self.tts.public()})
         await self.post("system", f"{a.person} (@{a.name}) left the meeting.", kind="system")
         return ""
+
+    # ---------------- background wake-ups and mid-turn updates
+    async def say_now(self, agent: Agent, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return "error: text is required"
+        await self.post(agent.name, text, hop=1, turn=agent.turn_id)
+        return "posted to the meeting; carry on with your work"
+
+    async def wake_me(self, agent: Agent, args: dict) -> str:
+        """Re-run this agent later (timer, file appears, or process ends) so it can report on background work."""
+        note = str(args.get("note") or "").strip()[:500]
+        if not note:
+            return "error: note (what to check and report when woken) is required"
+        mins, path, pid = args.get("after_minutes"), str(args.get("file_exists") or ""), args.get("pid_exited")
+        if mins is None and not path and pid is None:
+            return "error: give at least one of after_minutes, file_exists, pid_exited"
+        remote = self.location.remote
+        if remote and (path or pid is not None):
+            return "error: this meeting runs on a remote host; only after_minutes works there"
+        if sum(1 for w in self.wakers if w["agent"] == agent.name) >= 3:
+            return "error: you already have 3 pending wake-ups"
+        try:
+            deadline = time.time() + min(float(mins), 24 * 60) * 60 if mins is not None else time.time() + 24 * 3600
+            pid = int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            return "error: after_minutes and pid_exited must be numbers"
+        target = Path(path).expanduser() if path else None
+        if target and not target.is_absolute():
+            target = agent.workdir / target
+        w = {"agent": agent.name, "note": note}
+        self.wakers.append(w)
+
+        async def watch():
+            try:
+                why = ""
+                while not why:
+                    await asyncio.sleep(5)
+                    if agent.name.lower() not in self.agents:
+                        return
+                    if target and target.exists():
+                        why = f"{target} now exists"
+                    elif pid is not None and not _pid_alive(pid):
+                        why = f"process {pid} has ended"
+                    elif time.time() >= deadline:
+                        why = "the timer you set has elapsed" if mins is not None else "the 24 h limit was reached"
+                    elif mins is not None and not target and pid is None:
+                        continue
+                if agent.name.lower() in self.agents:
+                    agent.wake_notes.append(f"{note} (trigger: {why})")
+                    agent.queue.put_nowait(0)
+            finally:
+                if w in self.wakers:
+                    self.wakers.remove(w)
+        self.tasks.append(asyncio.create_task(watch()))
+        return "ok: you will get a new turn when the condition is met; you may end this turn now"
 
     # ---------------- progress bars for long tasks
     async def report_progress(self, agent: Agent, args: dict) -> str:
@@ -661,6 +728,16 @@ def room_app(room: Room, hub) -> FastAPI:
         ok = await room.request_approval(a, tool, permission_summary(tool, inp))
         await a.set_status("working", f"{tool} approved" if ok else f"{tool} denied")
         return {"allow": ok}
+
+    @app.post("/internal/wake")
+    async def internal_wake(request: Request):
+        room, a, body = await internal_body(request)
+        return {"text": await room.wake_me(a, body)}
+
+    @app.post("/internal/say")
+    async def internal_say(request: Request):
+        room, a, body = await internal_body(request)
+        return {"text": await room.say_now(a, str(body.get("text") or ""))}
 
     @app.post("/internal/progress")
     async def internal_progress(request: Request):
