@@ -96,7 +96,17 @@ function buildRoom(scene) {
     for (let i = 0; i < 7; i++) { const x = i * 8 - 2, t = 18 + (i * 7) % 9; g.beginPath(); g.moveTo(x, h); g.lineTo(x + 5, t); g.lineTo(x + 10, h); g.fill(); }
   });
   box(1.4, 1.25, 0.08, 0x4e3119, -2.2, 1.75, -1.88, scene);
-  box(1.22, 1.08, 0.02, new THREE.MeshBasicMaterial({ map: night }), -2.2, 1.75, -1.83, scene);
+  const dayTex = canvasTex(48, 40, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#5aa8e8"); gr.addColorStop(1, "#bfe3f8");
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#fff6b0"; g.fillRect(34, 5, 5, 5); g.fillStyle = "#ffffff";
+    [[6, 8, 10], [22, 14, 12], [30, 22, 9]].forEach(([x, y, l]) => { g.fillRect(x, y, l, 2); g.fillRect(x + 2, y - 1, l - 4, 1); });
+    g.fillStyle = "#5c9c4a"; for (let i = 0; i < 7; i++) { const x = i * 8 - 2, t = 28 + (i * 5) % 6; g.beginPath(); g.moveTo(x, h); g.lineTo(x + 5, t); g.lineTo(x + 10, h); g.fill(); }
+  });
+  const paneMat = new THREE.MeshBasicMaterial({ map: night });
+  const pane = box(1.22, 1.08, 0.02, paneMat, -2.2, 1.75, -1.83, scene);
+  pane.userData.pick = { kind: "window" };
+  scene.userData.win = { pane, paneMat, night, dayTex };
   box(0.05, 1.08, 0.05, 0x4e3119, -2.2, 1.75, -1.82, scene); box(1.22, 0.05, 0.05, 0x4e3119, -2.2, 1.75, -1.82, scene);
   const check = canvasTex(16, 16, (g) => { for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { g.fillStyle = (x + y) % 2 ? "#e9dcc6" : "#9b2b24"; g.fillRect(x * 4, y * 4, 4, 4); } });
   check.wrapS = check.wrapT = THREE.RepeatWrapping; check.repeat.set(3, 9);
@@ -158,6 +168,7 @@ function buildRoom(scene) {
   const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.26, 0.28, 6, 1, true),
     new THREE.MeshBasicMaterial({ color: 0xffb04a, side: THREE.DoubleSide })); shade.position.set(2.75, 1.1, -1.2); scene.add(shade);
   const lamp = new THREE.PointLight(0xffa24a, 6, 0, 1.6); lamp.position.set(2.75, 1.05, -1.1); scene.add(lamp);
+  Object.assign(scene.userData.win, { lamp, shade });
 
   // desk
   box(1.8, 0.06, 0.9, 0x7a4a26, 0, 0.74, -0.08, scene);
@@ -432,7 +443,11 @@ function buildChar(color, face, pants) {
   box(0.26, 0.105, 0.23, 0x263f63, 0, 0.435, -0.005, leaderHat);
   box(0.265, 0.025, 0.235, 0xe6b84d, 0, 0.393, -0.005, leaderHat);
   box(0.055, 0.055, 0.012, 0xffd86b, 0, 0.438, 0.116, leaderHat);
-  return { root: group, outline, hit, bodyMat, upper: spine, head, leaderHat, armL: shL, armR: shR, elbowL: elL, elbowR: elR, legL: thL, legR: thR, kneeL: knL, kneeR: knR,
+  // a phone for daytime idling: held in the right hand, hidden unless used
+  const phone = new THREE.Group(); elR.add(phone); phone.position.set(0.012, -0.33, 0.045); phone.visible = false;
+  box(0.075, 0.14, 0.014, 0x15171c, 0, 0, 0, phone);
+  box(0.063, 0.122, 0.004, new THREE.MeshBasicMaterial({ color: 0x9fd4ff }), 0, 0, 0.009, phone);
+  return { root: group, phone, outline, hit, bodyMat, upper: spine, head, leaderHat, armL: shL, armR: shR, elbowL: elL, elbowR: elR, legL: thL, legR: thR, kneeL: knL, kneeR: knR,
     dispose() { if (!disposed) { disposed = true; disposeObject(group); } } };
 }
 
@@ -529,8 +544,9 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x1a120c);
   scene.fog = new THREE.Fog(0x1a120c, 6, 11);
-  scene.add(new THREE.HemisphereLight(0xffdcae, 0x3a2716, 1.25));
+  const hemi = new THREE.HemisphereLight(0xffdcae, 0x3a2716, 1.25); scene.add(hemi);
   const moon = new THREE.DirectionalLight(0x8fa6ff, 0.35); moon.position.set(-3, 3, 1); scene.add(moon);
+  const sun = new THREE.DirectionalLight(0xfff2d0, 0); sun.position.set(-4, 4, 1.5); scene.add(sun);
   const { screen, term, mon } = buildRoom(scene);
   overlay.style.pointerEvents = "none";
 
@@ -652,7 +668,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const dozing = !sleeping && !offline && now - c.lastActive > DOZE_AFTER_MS;
     const ramp = Math.min(1, Math.max(0, (now - c.lastActive - DOZE_AFTER_MS) / 5000));   // drift off over ~5 s
     c.doze = dozing ? Math.max(c.doze, ramp * ramp * (3 - 2 * ramp)) : lerp(c.doze, 0, 1 - Math.pow(0.0005, dt));   // wake up fast
-    const dz = c.doze;
+    const dz = c.doze, pk = dz * dayK, sdz = dz * (1 - dayK);   // by day idle agents scroll their phones instead of dozing
     const jolt = (() => { const cy = (t + c.phase * 3) % 13; return cy < 0.6 ? Math.sin(cy / 0.6 * Math.PI) : 0; })();   // occasional head-jerk "I'm awake!"
 
     // where to be
@@ -696,7 +712,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     r.legL.rotation.x = lerp(0, -1.5, c.sit) + swing; r.legR.rotation.x = lerp(0, -1.5, c.sit) - swing;
     r.kneeL.rotation.x = lerp(0, 1.5, c.sit) + (moving ? Math.max(0, -swing) * 0.9 : 0);
     r.kneeR.rotation.x = lerp(0, 1.5, c.sit) + (moving ? Math.max(0, swing) * 0.9 : 0);
-    r.upper.rotation.x = 0.42 * c.lean + dz * (0.2 + Math.sin(t * 0.9 + c.phase) * 0.025) + (sleeping && !moving ? 0.25 + Math.sin(t * 1.4) * 0.02 : offline ? 0.15 : 0);
+    r.upper.rotation.x = 0.42 * c.lean + sdz * (0.2 + Math.sin(t * 0.9 + c.phase) * 0.025) + pk * 0.1 + (sleeping && !moving ? 0.25 + Math.sin(t * 1.4) * 0.02 : offline ? 0.15 : 0);
     r.upper.position.y = 0.8 + Math.sin(t * 1.6 + c.phase) * 0.006;
 
     // arms
@@ -713,8 +729,14 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
       aL = -0.3 + Math.sin(t * 3.1) * 0.1; aR = -0.38 + Math.sin(t * 2.6 + 1) * 0.12;
       eL = -0.85 + Math.sin(t * 2.3) * 0.15; eR = -0.95 + Math.sin(t * 2.9 + 2) * 0.18; zL = 0.12; zR = -0.12;
     }
-    if (dz > 0.01) {             // dozing: hands slump onto the lap
-      aL = lerp(aL, -0.38, dz); aR = lerp(aR, -0.3, dz); eL = lerp(eL, -0.55, dz); eR = lerp(eR, -0.6, dz); zL = lerp(zL, 0.16, dz); zR = lerp(zR, -0.16, dz);
+    if (sdz > 0.01) {            // dozing: hands slump onto the lap
+      aL = lerp(aL, -0.38, sdz); aR = lerp(aR, -0.3, sdz); eL = lerp(eL, -0.55, sdz); eR = lerp(eR, -0.6, sdz); zL = lerp(zL, 0.16, sdz); zR = lerp(zR, -0.16, sdz);
+    }
+    r.phone.visible = pk > 0.05;
+    if (pk > 0.01) {             // phone: right hand up in front of the face, left hand resting, thumb scrolling
+      aR = lerp(aR, -1.0, pk); eR = lerp(eR, -1.55 + Math.sin(t * 2.2 + c.phase) * 0.05, pk); zR = lerp(zR, -0.05, pk);
+      aL = lerp(aL, -0.38, pk); eL = lerp(eL, -0.55, pk); zL = lerp(zL, 0.16, pk);
+      r.phone.rotation.x = -0.9 + Math.sin(t * 3.1 + c.phase) * 0.03;
     }
     const kk = moving ? 1 : k;
     r.armL.rotation.x = lerp(r.armL.rotation.x, aL, kk); r.armR.rotation.x = lerp(r.armR.rotation.x, aR, kk);
@@ -724,8 +746,8 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     // head
     const nod = c.nodUntil > now ? Math.sin((1 - (c.nodUntil - now) / 700) * Math.PI * 2) * 0.28 : 0;
     r.head.rotation.x = nod + (sleeping && !moving ? 0.55 + Math.sin(t * 1.4) * 0.06 : offline ? 0.5 : typing ? 0.12 + Math.sin(t * 2 + c.phase) * 0.03 : speaking ? Math.sin(t * 7) * 0.05 : 0)
-      + dz * (0.5 + Math.sin(t * 0.9 + c.phase) * 0.07 - jolt * 0.45);
-    r.head.rotation.z = dz * (c.idx % 2 ? 0.2 : -0.2) * (1 - jolt * 0.6);
+      + sdz * (0.5 + Math.sin(t * 0.9 + c.phase) * 0.07 - jolt * 0.45) + pk * (0.4 + Math.sin(t * 0.5 + c.phase) * 0.03 + (Math.sin(t * 0.37 + c.phase * 2) > 0.92 ? -0.25 : 0));
+    r.head.rotation.z = sdz * (c.idx % 2 ? 0.2 : -0.2) * (1 - jolt * 0.6);
 
     // label + bubble
     tmp.set(0, 2.0 - 0.26 * c.sit, 0); r.root.localToWorld(tmp); tmp.project(camera);
@@ -740,7 +762,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     if (sleeping) { text = "z Z Z · token limit · mention to retry"; cls += " sleep"; }
     else if (speaking) { text = c.saying.length > 150 ? c.saying.slice(0, 147) + "…" : c.saying; cls += " say"; }
     else if (waiting) { text = "! needs your approval"; cls += " wait"; }
-    else if (dz > 0.6 && !c.busy) { text = "z"; cls += " doze"; }
+    else if (sdz > 0.6 && !c.busy) { text = "z"; cls += " doze"; }
     else if (c.busy) {
       const activity = (c.activity || (c.status === "thinking" ? "Reviewing request…" : "Working…")).replace(/\s+/g, " ").trim();
       const short = activity.split(" ").slice(0, 7).join(" ").slice(0, 64);
@@ -769,6 +791,19 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
   const monMeshes = []; mon.traverse(o => { if (o.isMesh) { o.userData.pick = { kind: "monitor" }; monMeshes.push(o); } });
   const monMats = monMeshes.map(o => o.material).filter(m => m.emissive);
   const doorMeshes = scene.userData.doorMeshes || [], doorMat = scene.userData.doorMat;
+  // ---------------- day / night: click the window
+  const W = scene.userData.win, NIGHT = { bg: new THREE.Color(0x1a120c), sky: new THREE.Color(0xffdcae), gnd: new THREE.Color(0x3a2716) },
+    DAY = { bg: new THREE.Color(0xc4def0), sky: new THREE.Color(0xfffaf0), gnd: new THREE.Color(0x9a8468) };
+  let dayTarget = saved.day ? 1 : 0, dayK = dayTarget, dayShown = -1;
+  function applyDay(k) {
+    if (k === dayShown) return; dayShown = k;
+    scene.background.copy(NIGHT.bg).lerp(DAY.bg, k); scene.fog.color.copy(scene.background);
+    hemi.color.copy(NIGHT.sky).lerp(DAY.sky, k); hemi.groundColor.copy(NIGHT.gnd).lerp(DAY.gnd, k); hemi.intensity = 1.25 + 0.55 * k;
+    moon.intensity = 0.35 * (1 - k); sun.intensity = 1.5 * k; W.lamp.intensity = 6 * (1 - k);
+    W.shade.material.color.setHex(k > 0.5 ? 0xd8b070 : 0xffb04a);
+    const t = k > 0.5 ? W.dayTex : W.night; if (W.paneMat.map !== t) { W.paneMat.map = t; W.paneMat.needsUpdate = true; }
+  }
+  applyDay(dayK);
   const jbx = scene.userData.jukebox, jukebox = createJukebox(saved.music || {}, saveState);
   let pointer = null, hovered = null, tagHover = null;
   canvas.addEventListener("pointermove", e => { pointer = { x: e.clientX, y: e.clientY }; });
@@ -778,7 +813,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const r = canvas.getBoundingClientRect();
     ndc.set((p.x - r.left) / r.width * 2 - 1, -((p.y - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const targets = [...monMeshes, ...doorMeshes, ...jbx.meshes, ...(scene.userData.seatMeshes || [])]; for (const c of chars.values()) targets.push(c.rig.hit);
+    const targets = [...monMeshes, ...doorMeshes, scene.userData.win.pane, ...jbx.meshes, ...(scene.userData.seatMeshes || [])]; for (const c of chars.values()) targets.push(c.rig.hit);
     const h = ray.intersectObjects(targets, false)[0];
     return h ? h.object.userData.pick : null;
   }
@@ -803,6 +838,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     const p = pickAt({ x: e.clientX, y: e.clientY });
     if (p && p.kind === "monitor") { setFocus(true); return; }
     if (p && p.kind === "jukebox") { jukebox.toggle(); return; }
+    if (p && p.kind === "window") { dayTarget = dayTarget ? 0 : 1; saveState(); return; }
     onPick(p ? { ...p, x: e.clientX, y: e.clientY } : null);
   });
   function setFocus(v) {
@@ -823,7 +859,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
       atComputer: c.atComputer, arrived: c.arrived,
     }]));
     try { localStorage.setItem(stateKey, JSON.stringify({
-      version: 1, agents, seatOwner, leanSpots: [...leanSpots], music: jukebox.snapshot(),
+      version: 1, day: dayTarget, agents, seatOwner, leanSpots: [...leanSpots], music: jukebox.snapshot(),
     })); } catch (e) { /* Full/disabled storage must not interrupt the room. */ }
   }
   window.addEventListener("pagehide", saveState);
@@ -849,6 +885,7 @@ export function createRoom({ wrap, canvas, labels, overlay, overlayW = 800, over
     camera.updateMatrixWorld();
     for (const c of chars.values()) updateChar(c, dt, t);
     { const on = jukebox.playing, k = on ? 0.5 + 0.5 * Math.sin(t * 5.2) : 0;
+      if (dayK !== dayTarget) { dayK += Math.sign(dayTarget - dayK) * Math.min(Math.abs(dayTarget - dayK), 0.04); applyDay(dayK); }
       jbx.light.intensity = on ? 1.2 + 0.8 * k : 0; jbx.group.position.y = 1.72 + (on ? 0.004 * k : 0);
       jbx.group.rotation.z = on ? Math.sin(t * 5.2) * 0.012 : 0; }
     setHover(tagHover && !focus ? { kind: "agent", name: tagHover } : pickAt(pointer));

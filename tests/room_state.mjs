@@ -15,6 +15,7 @@ const saver = section('  function saveState()', '  window.addEventListener("page
 const pos = {toArray:()=>[0.1, -0.26, 0.66]};
 context.chars = new Map([['kenji', {pos,yaw:3.14,sit:1,lean:0,walk:0,phase:2,doze:0,lastActive:8000,atComputer:true,arrived:true}]]);
 context.seatOwner = 'kenji'; context.leanSpots = new Map([['other', 0]]);
+context.dayTarget = 1;
 context.jukebox = {snapshot:()=>({playing:true,step:23})};
 vm.runInContext(`{ ${loader}\n${saver}\nsaveState(); }`, context);
 const snapshot = JSON.parse(stored.get('mr_roomstate_v1:/r/alpha'));
@@ -23,6 +24,7 @@ assert.equal(snapshot.agents.kenji.atComputer, true);
 assert.equal(snapshot.music.playing, true);
 assert.equal(snapshot.music.step, 23);
 assert.equal(snapshot.seatOwner, 'kenji');
+assert.equal(snapshot.day, 1);
 assert.equal(snapshot.agents.kenji.status, undefined);
 vm.runInContext(`{ ${loader}; globalThis.restored = saved; }`, context);
 assert.equal(context.restored.agents.kenji.sit, 1);
