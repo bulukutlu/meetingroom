@@ -114,7 +114,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Meeting room -
 <div class="where"><h3>Voice</h3>
  <label class="t"><input type="checkbox" data-s="tts"> Read replies aloud</label><div class="d">Agents' replies are spoken with the local voices.</div>
  <label class="t" for="srate">Speech speed <input type="range" id="srate" min="75" max="200" step="5"> <span id="sratev"></span></label><div class="d">How fast agents speak. 100% is the default pace.</div>
- <label class="t">Agents talking to each other <input type="range" id="avol" min="0" max="100" step="5"> <span id="avolv"></span></label><div class="d">Volume relative to speech addressed to you (100% = same as yours).</div></div>
+ <label class="t">Agents talking to each other <input type="range" id="avol" min="0" max="100" step="5"> <span id="avolv"></span></label><div class="d">Volume relative to speech addressed to you (100% = same as yours).</div>
+ <label class="t" for="sttm">Dictation model <select id="sttm" style="flex:1;background:#0e0a07;color:var(--text);border:2px solid #000;padding:5px 6px;font:12px var(--mono)"></select></label><div class="d">Whisper, runs on this computer. Smaller models use less memory.</div>
+ <label class="t" for="ttsm">Voice model <select id="ttsm" style="flex:1;background:#0e0a07;color:var(--text);border:2px solid #000;padding:5px 6px;font:12px var(--mono)"></select></label><div class="d" id="speechst">Kokoro, runs on this computer. Changes apply at once to open rooms too.</div></div>
 <div class="where"><h3>Sound</h3><label class="t"><input type="checkbox" data-s="sounds"> Acknowledgements and keyboard clicks</label>
  <label class="t" for="mvol">Music volume <input type="range" id="mvol" min="0" max="100" step="5"> <span id="mvolv"></span></label><div class="d">Jukebox music in meeting rooms. 0% mutes the music.</div></div>
 <div class="where"><h3>You</h3><label class="t" for="uname">Your name <input type="text" id="uname" maxlength="40" autocomplete="off" spellcheck="false" style="flex:1;background:#0e0a07;color:var(--text);border:2px solid #000;padding:6px 8px;font:13px var(--mono)"> <button class="wbtn" id="unamesave">Save</button></label><div class="d" id="unamest">How agents address you. Applies to rooms opened from now on.</div></div>
@@ -267,7 +269,7 @@ drawWhere();
 function openSetup(){buildCards();document.body.classList.add('setup');scrollTo(0,0);status('');drawWhere()}
 function closeSetup(){document.body.classList.remove('setup')}
 const SD={tts:0,sounds:1,autosend:0};
-function openSett(){document.body.classList.add('sett');scrollTo(0,0);refreshStorage();
+function openSett(){document.body.classList.add('sett');scrollTo(0,0);refreshStorage();loadSpeech();
  document.querySelectorAll('#sett [data-s]').forEach(c=>{const v=localStorage.getItem('mr_'+c.dataset.s);c.checked=v===null?!!SD[c.dataset.s]:v==='1';c.onchange=()=>localStorage.setItem('mr_'+c.dataset.s,c.checked?'1':'0')});
  const r=$('avol'),v=localStorage.getItem('mr_agentvol');r.value=Math.round((v===null?.55:+v)*100);$('avolv').textContent=r.value+'%';
  r.oninput=()=>{$('avolv').textContent=r.value+'%';localStorage.setItem('mr_agentvol',r.value/100)};
@@ -284,6 +286,13 @@ async function saveName(v,st){const n=v.trim();if(!n){if(st)st.textContent='Plea
 if(__ASKNAME__){const w=$('welcome');w.style.display='flex';$('wname').value=UNAME;$('wname').select();
  const go=async()=>{if(await saveName($('wname').value)){$('uname').value=$('wname').value.trim();w.style.display='none'}};
  $('wok').onclick=go;$('wname').onkeydown=e=>{if(e.key==='Enter')go()}}
+async function loadSpeech(){try{const d=await fetch('/api/speech'+Q).then(r=>r.json());
+ for(const [id,k] of [['sttm','stt'],['ttsm','tts']]){const e=$(id);e.innerHTML='';d[k].choices.forEach(([v,l])=>e.add(new Option(l,v,false,v===d[k].model)));
+  if(![...e.options].some(o=>o.selected))e.add(new Option(d[k].model.split('/').pop()+' (agents.yaml)',d[k].model,true,true));
+  e.disabled=!d[k].enabled;e.onchange=()=>saveSpeech(k==='stt'?{stt_model:e.value}:{tts_model:e.value})}}catch(e){$('speechst').textContent='Could not read the speech models.'}}
+async function saveSpeech(b){const st=$('speechst');st.textContent='Switching…';
+ const r=await fetch('/api/speech'+Q,{method:'POST',body:JSON.stringify(b)});
+ st.textContent=r.ok?'Saved. '+((await r.json()).rooms?'Open rooms are switching now (first use downloads the model).':'Used by the next room you open.'):'Could not switch the model.'}
 const closeSett=()=>document.body.classList.remove('sett');$('sback').onclick=closeSett;
 async function refreshStorage(){try{const r=await fetch('/api/storage'+Q);if(!r.ok)throw Error('Could not check storage');const d=await r.json();$('storageInfo').textContent=(d.reclaimed_bytes/1048576).toFixed(1)+' MB can be reclaimed.'}catch(e){$('storageInfo').textContent=e.message}}
 $('compactStorage').onclick=async()=>{const b=$('compactStorage');b.disabled=true;$('storageInfo').textContent='Compacting meeting files…';try{const r=await fetch('/api/storage/compact'+Q,{method:'POST',body:'{}'});if(!r.ok)throw Error('Could not compact storage');const d=await r.json();$('storageInfo').textContent='Reclaimed '+(d.reclaimed_bytes/1048576).toFixed(1)+' MB. Meetings and outputs preserved.'}catch(e){$('storageInfo').textContent=e.message}finally{b.disabled=false}};

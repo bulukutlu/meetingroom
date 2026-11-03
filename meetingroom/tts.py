@@ -17,6 +17,14 @@ import numpy as np
 
 RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 FILES = {"model": "kokoro-v1.0.onnx", "voices": "voices-v1.0.bin"}
+# Model files offered in Settings (same release, same voices file): (file, label).
+MODEL_CHOICES = [("kokoro-v1.0.onnx", "Full precision (325 MB)"),
+                 ("kokoro-v1.0.fp16.onnx", "Half precision (170 MB)"),
+                 ("kokoro-v1.0.int8.onnx", "8-bit (90 MB, fastest)")]
+
+
+def model_file(name: str | None) -> str:
+    return name if name in {f for f, _ in MODEL_CHOICES} else FILES["model"]
 # Distinct default voices, handed out to agents in order (override per agent with `voice:`).
 VOICE_POOL = ["am_michael", "bf_emma", "am_adam", "af_heart", "bm_george", "af_nicole", "am_puck", "bf_isabella"]
 
@@ -39,6 +47,7 @@ class Speaker:
         self.wanted = (c.get("engine") or "kokoro").lower()  # kokoro | browser
         self.speed = float(c.get("speed") or 1.3)
         self.lang = c.get("lang") or "en-us"
+        self.file = model_file(c.get("model"))
         self.dir = workspace / "models" / "kokoro"
         self.voices = {}
         from .agents import assign_voices   # voice gender follows the agent's face
@@ -52,7 +61,7 @@ class Speaker:
 
     def public(self) -> dict:
         ready = self.status == "ready" and bool(self.perms or not self.voices)
-        return {"status": self.status if self.status != "ready" or ready else "loading", "detail": self.detail, "voices": self.voices,
+        return {"status": self.status if self.status != "ready" or ready else "loading", "detail": self.detail, "model": self.file, "voices": self.voices,
                 "acks": {k: len(v) for k, v in self.acks.items()},
                 "perms": {k: len(v) for k, v in self.perms.items()}}
 
@@ -61,7 +70,7 @@ class Speaker:
             return
         try:
             t = time.time()
-            self.model = preload(self.dir, self.speed, self.lang).result()   # usually already loading since start-up
+            self.model = preload(self.dir, self.speed, self.lang, self.file).result()   # usually already loading since start-up
             self.status = "ready"   # synth_wav needs this; clips are published only once all are made
             acks, perms = {}, {}
             for agent in self.voices:          # acknowledgement clips for instant playback
@@ -78,6 +87,21 @@ class Speaker:
         except Exception as e:
             self.status, self.detail = "error", f"{type(e).__name__}: {e}"
             print(f"  narration: Kokoro unavailable, using browser voices ({self.detail})", flush=True)
+
+    def switch(self, file: str):
+        """Use another Kokoro model file from now on (Settings); clips are remade with it."""
+        file = model_file(file)
+        if self.wanted == "browser" or file == self.file:
+            return
+        with _SWITCH_LOCK:
+            self.file, self.status, self.detail, self.model = file, "loading", "", None
+            self.acks, self.perms = {}, {}
+            with _PRELOAD_LOCK:
+                for k in [k for k in _PRELOADS if k[1] != file]:
+                    del _PRELOADS[k]       # drop the old model once no room uses it
+            with _CLIP_LOCK:
+                _CLIPS.clear()
+            self.load()
 
     def add_agent(self, spec: dict, existing: list[dict]):
         """Give a newly seated agent a voice (same gender as its face, unused if possible) and its clips."""
@@ -104,6 +128,8 @@ class Speaker:
             raise RuntimeError(f"Kokoro not ready ({self.status})")
         voice = self.voices.get(agent.lower(), VOICE_POOL[0])
         with self._lock:
+            if self.model is None:
+                raise RuntimeError("Kokoro is switching models")
             samples, sr = self.model.create(text[:1000], voice=voice, speed=self.speed, lang=self.lang)
         pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
         buf = io.BytesIO()
@@ -114,6 +140,7 @@ class Speaker:
 
 _PRELOADS: dict[Path, Future] = {}
 _SYNTH_LOCK = threading.Lock()
+_SWITCH_LOCK = threading.Lock()
 _PRELOAD_LOCK = threading.Lock()
 _CLIP_LOCK = threading.Lock()
 _CLIPS: dict = {}   # shared startup clips: model, voice, speed, language
@@ -133,23 +160,24 @@ def _download(d: Path, name: str) -> Path:
     return dest
 
 
-def _load_model(d: Path, speed: float, lang: str):
+def _load_model(d: Path, speed: float, lang: str, file: str = FILES["model"]):
     from kokoro_onnx import Kokoro
-    model = Kokoro(str(_download(d, FILES["model"])), str(_download(d, FILES["voices"])))
+    model = Kokoro(str(_download(d, file)), str(_download(d, FILES["voices"])))
     model.create("Ready.", voice=VOICE_POOL[0], speed=speed, lang=lang)  # warm-up
     return model
 
 
-def preload(model_dir: Path, speed: float = 1.3, lang: str = "en-us") -> Future:
+def preload(model_dir: Path, speed: float = 1.3, lang: str = "en-us", file: str = FILES["model"]) -> Future:
     """Start loading Kokoro in a background thread (once per model dir) and return its Future.
     Called at program start so the model is warm by the time the room opens."""
     with _PRELOAD_LOCK:
-        f = _PRELOADS.get(model_dir)
+        key = (model_dir, file)
+        f = _PRELOADS.get(key)
         if f is None:
-            f = _PRELOADS[model_dir] = Future()
+            f = _PRELOADS[key] = Future()
             def run():
                 try:
-                    f.set_result(_load_model(model_dir, speed, lang))
+                    f.set_result(_load_model(model_dir, speed, lang, file))
                 except BaseException as e:
                     f.set_exception(e)
             threading.Thread(target=run, name="kokoro-preload", daemon=True).start()
@@ -161,7 +189,7 @@ def preload_from_cfg(cfg: dict):
     if (c.get("engine") or "kokoro").lower() == "browser":
         return
     d = Path(cfg["workspace"]).expanduser().resolve() / "models" / "kokoro"
-    preload(d, float(c.get("speed") or 1.3), c.get("lang") or "en-us")
+    preload(d, float(c.get("speed") or 1.3), c.get("lang") or "en-us", model_file(c.get("model")))
 
 
 PERMISSION_PHRASES = ["I need your permission for this.", "Can I get your approval, please?", "I need a permission here."]

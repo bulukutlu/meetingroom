@@ -907,6 +907,11 @@ class Hub:
         from . import profile
         saved_name = profile.load(cfg)
         self.needs_name = saved_name is None and not cfg.get("_demo")
+        speech = profile.load_speech(cfg)   # models picked in Settings beat agents.yaml
+        if speech.get("stt_model"):
+            cfg["voice"] = {**(cfg.get("voice") or {}), "model": speech["stt_model"]}
+        if speech.get("tts_model"):
+            cfg["narration"] = {**(cfg.get("narration") or {}), "model": speech["tts_model"]}
         if saved_name:
             cfg["user_name"] = saved_name
         elif self.needs_name:
@@ -1111,6 +1116,44 @@ def create_hub(cfg: dict, port: int, token: str, initial: dict | None = None) ->
         cfg["user_name"] = name   # rooms opened from now on greet this name
         hub.needs_name = False
         return {"name": name}
+
+    @app.get("/api/speech")
+    async def get_speech(t: str | None = None):
+        hub.check_token(t)
+        from . import stt as S, tts as T
+        eng = S.local_engine()
+        return {"stt": {"model": (cfg.get("voice") or {}).get("model") or S.DEFAULT_MODELS[eng],
+                        "choices": S.MODEL_CHOICES[eng], "enabled": ((cfg.get("voice") or {}).get("engine") or "whisper") == "whisper"},
+                "tts": {"model": T.model_file((cfg.get("narration") or {}).get("model")), "choices": T.MODEL_CHOICES,
+                        "enabled": ((cfg.get("narration") or {}).get("engine") or "kokoro") == "kokoro"}}
+
+    @app.post("/api/speech")
+    async def set_speech(request: Request, t: str | None = None):
+        """Pick the Whisper / Kokoro model; saved for later launches and switched in every open room."""
+        from . import profile, stt as S, tts as T
+        b = await lobby_body(request, t)
+        stt_m, tts_m = str(b.get("stt_model") or ""), str(b.get("tts_model") or "")
+        if stt_m and stt_m not in {m for m, _ in S.MODEL_CHOICES[S.local_engine()]}:
+            return JSONResponse({"error": "unknown Whisper model"}, status_code=400)
+        if tts_m and tts_m not in {m for m, _ in T.MODEL_CHOICES}:
+            return JSONResponse({"error": "unknown Kokoro model"}, status_code=400)
+        profile.save_speech(cfg, stt_model=stt_m, tts_model=tts_m)
+        if stt_m:
+            cfg["voice"] = {**(cfg.get("voice") or {}), "model": stt_m}
+        if tts_m:
+            cfg["narration"] = {**(cfg.get("narration") or {}), "model": tts_m}
+
+        async def apply():
+            for room in list(hub.rooms.values()):
+                if stt_m and room.stt.model_name != stt_m:
+                    await room.broadcast({"type": "stt", "stt": {**room.stt.public(), "status": "loading"}})
+                    await asyncio.to_thread(room.stt.switch, stt_m)
+                    await room.broadcast({"type": "stt", "stt": room.stt.public()})
+                if tts_m:
+                    await asyncio.to_thread(room.tts.switch, tts_m)
+                    await room.broadcast({"type": "tts", "tts": room.tts.public()})
+        hub.speech_task = asyncio.create_task(apply())
+        return {"ok": True, "rooms": len(hub.rooms)}
 
     @app.post("/select")
     async def select(request: Request, t: str | None = None):

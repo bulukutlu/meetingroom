@@ -22,6 +22,33 @@ DEFAULT_MODELS = {
     "mlx": "mlx-community/whisper-large-v3-turbo",
     "faster": "large-v3-turbo",
 }
+# Choices offered in Settings, per engine: (model, label).
+MODEL_CHOICES = {
+    "mlx": [("mlx-community/whisper-large-v3-turbo", "Large v3 turbo, full precision (1.6 GB)"),
+            ("mlx-community/whisper-large-v3-turbo-q4", "Large v3 turbo, 4-bit (0.5 GB)")],
+    "faster": [("large-v3-turbo", "Large v3 turbo, int8"),
+               ("distil-large-v3", "Distil large v3, int8 (smaller, English)")],
+}
+MLX_CACHE_LIMIT = 256 * 1024 ** 2   # MLX keeps freed GPU buffers forever by default; cap them
+
+
+def local_engine() -> str:
+    """'mlx' on Apple Silicon with mlx-whisper installed, else 'faster'."""
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        try:
+            import mlx_whisper  # noqa: F401
+            return "mlx"
+        except ImportError:
+            pass
+    return "faster"
+
+
+def _free_mlx_cache():
+    try:
+        import mlx.core as mx
+        mx.clear_cache()
+    except Exception:
+        pass
 
 
 def _key(s: str) -> str:
@@ -75,11 +102,12 @@ class Transcriber:
             except Exception as e:
                 self.detail = f"Live dictation disabled: speech detector unavailable ({e}). Batch dictation still works."
                 print(f"  voice: {self.detail}", flush=True)
-            if platform.system() == "Darwin" and platform.machine() == "arm64":
+            if local_engine() == "mlx":
+                self.engine = "mlx"
                 try:
-                    import mlx_whisper  # noqa: F401
-                    self.engine = "mlx"
-                except ImportError:
+                    import mlx.core as mx
+                    mx.set_cache_limit(MLX_CACHE_LIMIT)
+                except Exception:
                     pass
             if self.engine is None:
                 from faster_whisper import WhisperModel
@@ -105,15 +133,29 @@ class Transcriber:
             self.status, self.detail = "error", f"{type(e).__name__}: {e}"
             print(f"  voice: local Whisper unavailable, using browser speech instead ({self.detail})", flush=True)
 
+    def switch(self, model: str):
+        """Use another Whisper model from now on (Settings). The previous one is released."""
+        if self.wanted != "whisper" or not model:
+            return
+        with _RUN_LOCK, _LOAD_LOCK:   # not in the middle of someone's dictation
+            self.model_name, self.model, self.engine, self.status, self.detail = model, None, None, "loading", ""
+            for k in [k for k in _MODELS if k[0] in ("mlx", "faster") and k[1] != model]:
+                del _MODELS[k]   # the shared copy goes; mlx-whisper itself holds only the last model used
+            self._load()
+        _free_mlx_cache()
+
     # ---------------- transcription
     def _run(self, audio: np.ndarray, prev: str = "") -> str:
         if self.engine == "echo":
             return f"[{len(audio) / SAMPLE_RATE:.1f}s]"
         if self.engine == "mlx":
             import mlx_whisper
-            r = mlx_whisper.transcribe(audio, path_or_hf_repo=self.model_name, language=self.language,
-                                       initial_prompt=(self.prompt + " " + prev).strip(), temperature=0.0,
-                                       condition_on_previous_text=False, verbose=None)
+            try:
+                r = mlx_whisper.transcribe(audio, path_or_hf_repo=self.model_name, language=self.language,
+                                           initial_prompt=(self.prompt + " " + prev).strip(), temperature=0.0,
+                                           condition_on_previous_text=False, verbose=None)
+            finally:
+                _free_mlx_cache()   # hand the scratch buffers back; costs no speed
             segs = [(s.get("text", ""), s.get("no_speech_prob", 0), s.get("avg_logprob", 0),
                      s.get("compression_ratio", 1)) for s in r.get("segments") or []]
         else:
