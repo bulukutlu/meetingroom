@@ -1,6 +1,6 @@
 # Meeting Room
 
-**v1.0.2** · A local, video-call style room where you hold a working meeting with
+**v1.1.0** · A local, video-call style room where you hold a working meeting with
 several AI agents at once: Claude Code, Codex and API models side by side. You
 address them with `@name`, by typing or by talking. They do real work on **your**
 computer (Python, shell, files), put plots, tables and HTML pages on a shared
@@ -357,6 +357,15 @@ tests/                   `python -m pytest tests` (Python) and `node tests/*.mjs
 ```
 
 ## Changelog
+
+- **1.1.0**: pick exact Claude and GPT model variants per room, grouped by company, with
+  the list built at startup (Codex model cache, Anthropic API when a key is stored). Agents
+  answer up to twice per chain (leaders five times) and can `wake_me` after a background
+  job or `say_now` mid-turn. Whisper frees its GPU buffer cache after each dictation
+  (about 2 GB less memory); Whisper and Kokoro models are selectable in Settings and switch
+  live. The shared screen plays audio and video and shows notebooks, Office files
+  (docx/xlsx/pptx), 3D models (STL/OBJ/GLB) and more code formats, all in classic windows
+  with a back-to-folder button. See the [release notes](docs/release-v1.1.0.md).
 
 - **1.0.2**: fix new-room creation silently dropping numbered agent seats. Rooms now
   include every selected instance, even when only numbered seats are chosen. Invalid

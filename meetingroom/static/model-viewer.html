@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D model viewer</title>
+<style>
+html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#202936; color:#eef2f6; font:13px system-ui,sans-serif; }
+canvas { display:block; width:100%; height:100%; touch-action:none; }
+#bar { position:absolute; top:10px; left:12px; right:12px; display:flex; align-items:center; gap:12px; pointer-events:none; }
+#name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+button { margin-left:auto; pointer-events:auto; cursor:pointer; }
+#status { position:absolute; bottom:10px; left:12px; right:12px; padding:6px; background:#202936dd; pointer-events:none; }
+</style>
+<div id="bar"><strong id="name">3D model</strong><button id="reset" type="button">Reset view</button></div>
+<div id="status" role="status">Loading model…</div>
+<script type="importmap">{"imports":{"three":"/static/vendor/three.min.js"}}</script>
+<script type="module" src="/static/model-viewer.js"></script>
+</html>

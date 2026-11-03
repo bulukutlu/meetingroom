@@ -96,6 +96,13 @@ header>.meta{flex-shrink:1}
 .file-grid button:hover{background:#ededed;color:#000}.file-grid button:focus{outline:0;background:transparent}.file-grid button:focus .file-name{background:#000080;color:#fff;outline:1px dotted #fff;outline-offset:-1px}
 .file-grid .file-name{padding:2px 4px;max-width:100%;overflow-wrap:anywhere;text-align:center}.file-icon{display:block;width:32px;height:32px}.file-icon svg{display:block;width:32px;height:32px;image-rendering:pixelated}
 .file-status{display:flex;justify-content:space-between;gap:12px;padding:4px 7px;flex:none;border:1px solid;border-color:#808080 #fff #fff #808080;color:#222;font-size:12px}
+.media{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:100%;padding:16px;box-sizing:border-box;background:#0b0d11;color:#cfd6e4;font:13px var(--mono,monospace)}
+.media audio{width:min(560px,100%)}.media video{max-width:100%;max-height:calc(100% - 36px);background:#000}
+.w98{box-sizing:border-box;height:100%;display:flex;flex-direction:column;padding:3px;background:#c0c0c0;border:2px solid;border-color:#fff #000 #000 #fff;color:#000;font:13px Tahoma,Arial,sans-serif}
+.w98body{position:relative;flex:1;min-height:0;overflow:hidden;margin-top:3px;background:#fff;border:2px solid;border-color:#808080 #fff #fff #808080}
+.w98body>img{width:100%;height:100%;object-fit:contain;display:block}.w98body>iframe{width:100%;height:100%;border:0;display:block;background:#fff}.w98body>.media{height:100%}
+.file-titlebar .w98up{margin-left:auto;flex:none;padding:1px 8px;background:#c0c0c0;color:#000;border:2px solid;border-color:#fff #000 #000 #fff;border-radius:0;font:700 12px Tahoma,Arial,sans-serif;cursor:pointer}
+.file-titlebar .w98up:active{border-color:#000 #fff #fff #000}
 .notepad{box-sizing:border-box;height:100%;display:flex;flex-direction:column;padding:3px;background:#c0c0c0;border:2px solid;border-color:#fff #000 #000 #fff;color:#000;font:13px Tahoma,Arial,sans-serif}
 .notepad-body{position:relative;flex:1;min-height:0;overflow:hidden;margin-top:3px;background:#fff;border:2px solid;border-color:#808080 #fff #fff #808080}
 #overlay .notepad pre,#modal .mc .notepad pre{position:static;inset:auto;margin:0;padding:16px;background:#fff;color:#000;overflow:auto;font:15px/1.5 "Courier New",monospace;white-space:pre;box-sizing:border-box}
@@ -833,13 +840,52 @@ function fileIcon(kind) {
     html: page + '<circle cx="16" cy="19" r="9" fill="#008080" stroke="#000"/><ellipse cx="16" cy="19" rx="4" ry="9" fill="none" stroke="#80ffff"/><path d="M7 19h18M9 14h14M9 24h14" stroke="#80ffff"/>',
     pdf: page + '<path d="M3 15h25v10H3z" fill="#800000" stroke="#000"/><text x="5" y="22" fill="#fff" font-family="monospace" font-size="8" font-weight="bold">PDF</text>',
     text: page + '<path d="M10 12h12M10 16h12M10 20h12M10 24h8" stroke="#000080" stroke-width="2"/>',
+    audio: page + '<path d="M12 20V11l9-2v9" fill="none" stroke="#800080" stroke-width="2"/><circle cx="10.5" cy="21" r="2.5" fill="#800080"/><circle cx="19.5" cy="19" r="2.5" fill="#800080"/>',
+    video: page + '<path d="M8 13h12v10H8z" fill="#000080" stroke="#000"/><path d="m20 16 5-3v10l-5-3z" fill="#4060ff" stroke="#000"/>',
   };
   return '<svg viewBox="0 0 32 32" aria-hidden="true" shape-rendering="crispEdges">' + (art[kind] || page + '<path d="M11 13h10v11H11z" fill="#808080"/>') + '</svg>';
 }
+function mediaPlayer(s, url) {
+  const tag = s.kind === "video" ? `<video controls preload="metadata" src="${url}"></video>` : `<audio controls preload="metadata" src="${url}"></audio>`;
+  return `<div class="media ${s.kind}"><div class="media-name">${esc(s.name)}</div>${tag}</div>`;
+}
+// Back to the shared folder a file was opened from, inside the window's own title bar.
+const upBtn = s => s.parent ? `<button class="w98up" data-up="${esc(s.parent)}" title="Back to the folder">◄ Back to folder</button>` : "";
 function textWindow(s, content) {
-  return `<div class="notepad"><div class="file-titlebar">${fileIcon("text")}<h2>${esc(s.name)} - Notepad</h2></div><div class="notepad-body">${content}</div></div>`;
+  return `<div class="notepad"><div class="file-titlebar">${fileIcon("text")}<h2>${esc(s.name)} - Notepad</h2>${upBtn(s)}</div><div class="notepad-body">${content}</div></div>`;
+}
+// Every other shared file sits in the same classic window as folders and text.
+const APP = { image: "Image Viewer", html: "Web Page", pdf: "Document", audio: "Media Player", video: "Media Player", office: "Office Viewer", model3d: "3D Viewer" };
+function winFrame(s, inner) {
+  return `<div class="w98"><div class="file-titlebar">${fileIcon(s.kind)}<h2>${esc(s.name || s.title)}${APP[s.kind] ? " - " + APP[s.kind] : ""}</h2>${upBtn(s)}</div><div class="w98body">${inner}</div></div>`;
+}
+function notebookWindow(s, raw) {
+  let nb; try { nb = JSON.parse(raw); } catch (e) { return textWindow(s, `<pre>${esc(raw)}</pre>`); }
+  const j = x => Array.isArray(x) ? x.join("") : (x || "");
+  const lang = (nb.metadata && nb.metadata.language_info && nb.metadata.language_info.name) || "";
+  const cells = (nb.cells || (nb.worksheets && nb.worksheets[0] && nb.worksheets[0].cells) || []).map(c => {
+    const src = j(c.source || c.input), n = c.execution_count == null ? " " : c.execution_count;
+    if (c.cell_type === "markdown") return `<div class="nbcell nbmd doc">${mdDoc(src)}</div>`;
+    if (c.cell_type !== "code") return `<div class="nbcell"><pre>${esc(src)}</pre></div>`;
+    const outs = (c.outputs || []).map(o => {
+      if (o.output_type === "stream") return `<pre class="nbout${o.name === "stderr" ? " nberr" : ""}">${esc(j(o.text))}</pre>`;
+      if (o.output_type === "error") return `<pre class="nbout nberr">${esc((o.traceback || []).join("\n").replace(/\x1b\[[0-9;]*m/g, "") || o.ename + ": " + o.evalue)}</pre>`;
+      const d = o.data || {}, im = d["image/png"] || d["image/jpeg"];
+      if (im) return `<img class="nbimg" src="${esc(`data:${d["image/png"] ? "image/png" : "image/jpeg"};base64,${j(im).replace(/\s/g, "")}`)}">`;
+      if (d["image/svg+xml"]) return `<img class="nbimg" src="data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(j(d["image/svg+xml"]))))}">`;
+      if (d["text/html"]) return `<iframe class="nbhtml" sandbox srcdoc="${esc(j(d["text/html"]))}"></iframe>`;
+      return `<pre class="nbout">${esc(j(d["text/plain"] || o.text))}</pre>`;
+    }).join("");
+    return `<div class="nbcell"><div class="nbin"><span class="nbn">In [${n}]:</span><pre data-lang="${esc(lang)}">${esc(src)}</pre></div>${outs}</div>`;
+  }).join("");
+  return textWindow(s, `<style>.nbcell{margin:6px 0;border-bottom:1px solid #c0c0c0;padding-bottom:6px}.nbin{display:flex;gap:8px}.nbn{color:#000080;font:11px monospace;white-space:nowrap}.nbin pre{flex:1;margin:0;background:#f4f4f4;padding:4px}.nbout{margin:4px 0 0 70px;white-space:pre-wrap}.nberr{color:#a00}.nbimg{display:block;max-width:100%;margin:4px 0 0 70px}.nbhtml{width:100%;height:240px;border:1px solid #c0c0c0;background:#fff}</style><div class="nb">${cells}</div>`);
 }
 async function contentFor(s, big) {
+  const inner = await rawContent(s, big);
+  return s.kind === "folder" || s.kind === "text" || s.kind === "notebook" ? inner : winFrame(s, inner);
+}
+async function rawContent(s, big) {
+  if (s.kind === "office") return `<iframe sandbox src="${fileUrl(s.id).replace("?", "/office?")}"></iframe>`;
   if (s.kind === "folder") {
     return `<div class="file-explorer"><div class="file-titlebar">${fileIcon("folder")}<h2>${esc(s.title)}</h2></div>` +
       `<div class="file-address"><span>Address</span><span class="file-path">${fileIcon("folder")}Shared outputs / ${esc(s.title)}</span></div><div class="file-grid">` +
@@ -847,9 +893,12 @@ async function contentFor(s, big) {
       `</div><div class="file-status"><span>${s.children.length} object${s.children.length === 1 ? "" : "s"}</span><span>Click an icon to open</span></div></div>`;
   }
   const url = fileUrl(s.id);
+  if (s.kind === "model3d") return `<iframe title="3D model viewer" src="/static/model-viewer.html#${new URLSearchParams({src: url, name: s.name})}"></iframe>`;
   if (s.kind === "image") return `<img src="${url}" alt="${esc(s.title)}">`;
   if (s.kind === "html") return `<iframe sandbox="allow-scripts allow-popups allow-forms" src="${url}"></iframe>`;
   if (s.kind === "pdf") return `<iframe src="${url}"></iframe>`;
+  if (s.kind === "audio" || s.kind === "video") return mediaPlayer(s, url);
+  if (s.kind === "notebook") return notebookWindow(s, await (await fetch(url)).text());
   if (s.kind === "text") {
     const t = await (await fetch(url)).text();
     return textWindow(s, /\.(md|markdown)$/i.test(s.name) ? `<div class="doc">${mdDoc(t)}</div>` : `<pre>${esc(t)}</pre>`);
@@ -870,8 +919,8 @@ async function show(id, focus) {
 }
 function syncFocusBtn() { $("sbFocus").textContent = room && room.focused ? "Room view" : "Zoom to screen"; }
 $("sbFolder").onclick = () => { const s = S.shared.find(x => x.id === S.current); if (s && s.parent) show(s.parent, false); };
-$("screenContent").addEventListener("click", e => { const b = e.target.closest("[data-file]"); if (b) show(b.dataset.file, false); });
-$("mContent").addEventListener("click", e => { const b = e.target.closest("[data-file]"); if (b) openViewer(b.dataset.file, false); });
+$("screenContent").addEventListener("click", e => { const b = e.target.closest("[data-file],[data-up]"); if (b) show(b.dataset.file || b.dataset.up, false); });
+$("mContent").addEventListener("click", e => { const b = e.target.closest("[data-file],[data-up]"); if (b) openViewer(b.dataset.file || b.dataset.up, false); });
 $("sbFocus").onclick = () => { if (room) { room.setFocus(!room.focused); syncFocusBtn(); } };
 $("sbClose").onclick = () => { S.current = null; renderShared(); $("screenContent").innerHTML = ""; $("screenbar").style.display = "none"; if (room) { room.setScreen(false); room.setFocus(false); } };
 $("sbFull").onclick = () => { if (S.current) openViewer(S.current, false); };
@@ -919,7 +968,9 @@ function sizeStage() {
 }
 window.addEventListener("resize", () => { sizeStage(); });
 async function markContent(s) {
+  if (s.kind === "office") return contentFor(s, true);
   const url = fileUrl(s.id), L = '<div class="blayer"></div>';
+  if (s.kind === "model3d") return contentFor(s, true);
   if (s.kind === "image") return `<div class="stage fit"><div class="surf img" data-surf="0"><img src="${url}" alt="">${L}</div></div>`;
   if (s.kind === "pdf") {
     let info = { pages: 0 };
@@ -937,6 +988,7 @@ async function markContent(s) {
     return textWindow(s, `<div class="stage"><div class="surf txt" data-surf="0">${inner}${L}</div></div>`);
   }
   if (s.kind === "html") return `<div class="stage"><div class="surf web" data-surf="0"><iframe sandbox="allow-scripts allow-popups allow-forms" src="${url}&mark=1"></iframe>${L}</div></div>`;
+  if (s.kind === "audio" || s.kind === "video") { setTimeout(() => { $("mHint").textContent = "Audio and video can be played but not marked"; }); return mediaPlayer(s, url); }
   return `<pre>${esc(s.name)}\n\nThis file type can't be marked.</pre>`;
 }
 function setMarking(on) {

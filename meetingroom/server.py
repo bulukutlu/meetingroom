@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from . import annotate, saved, storage
+from . import office
 from .agents import MAX_COPIES, Agent, assign_people, expand_agents, instance_table
 from .location import Location
 from .minutes import Recorder, build as build_minutes
@@ -61,10 +62,17 @@ MAX_HOPS = 4  # two round trips: you -> A -> B -> A -> B -> A, then it stops (ea
 # 5 full round trips (a supervisor and a worker answer up to five times each), then it stops.
 MAX_HOPS_SUPERVISED = 10
 KINDS = {
+    "office": {".docx", ".xlsx", ".pptx"},
+    "model3d": {".stl", ".obj", ".glb"},
     "image": {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"},
     "html": {".html", ".htm"},
     "pdf": {".pdf"},
-    "text": {".txt", ".md", ".csv", ".tsv", ".json", ".log", ".py", ".yaml", ".yml", ".tex"},
+    "audio": {".wav", ".mp3", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus"},
+    "video": {".mp4", ".webm", ".mov", ".m4v", ".ogv"},
+    "text": {".txt", ".md", ".csv", ".tsv", ".json", ".log", ".py", ".yaml", ".yml", ".tex",
+             ".sh", ".bash", ".zsh", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".c", ".cpp", ".cc", ".h", ".hpp",
+             ".toml", ".ini", ".cfg", ".conf", ".xml", ".r", ".R", ".css", ".sql", ".rs", ".go", ".java", ".jl", ".m", ".tcl", ".cmake", ".mk"},
+    "notebook": {".ipynb"},
 }
 
 
@@ -441,7 +449,9 @@ class Room:
             finally:
                 if w in self.wakers:
                     self.wakers.remove(w)
-        self.tasks.append(asyncio.create_task(watch()))
+        task = asyncio.create_task(watch())
+        self.tasks.append(task)
+        task.add_done_callback(lambda t: t in self.tasks and self.tasks.remove(t))   # long meetings: don't pile up
         return "ok: you will get a new turn when the condition is met; you may end this turn now"
 
     # ---------------- progress bars for long tasks
@@ -567,7 +577,26 @@ def room_app(room: Room, hub) -> FastAPI:
         if kind_of(p) == "file":
             # Unknown active formats (e.g. XHTML) must never execute on the hub origin.
             return FileResponse(p, media_type="application/octet-stream", filename=p.name, headers=headers)
+        headers["X-Content-Type-Options"] = "nosniff"
+        if kind_of(p) in ("text", "notebook"):
+            # Shown as text only: .xml/.js/... must never render or run on the hub origin ("Open in new tab").
+            return FileResponse(p, media_type="text/plain; charset=utf-8", headers=headers)
         return FileResponse(p, headers=headers)
+
+    @app.get("/files/{fid}/office")
+    async def office_preview(fid: str, t: str | None = None, f: str | None = None):
+        room = room_holder["room"]
+        if not f or not secrets.compare_digest(f, room.file_token(fid)):
+            check_token(t)
+        p = room.files.get(fid)
+        if not p or not p.exists() or kind_of(p) != "office":
+            raise HTTPException(404)
+        headers = {"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"}
+        try:
+            html = await asyncio.to_thread(office.preview, p)
+        except (ValueError, OSError):
+            return HTMLResponse("<p>This Office document cannot be previewed: it is damaged, encrypted, unsupported or exceeds the preview limits.</p>", status_code=422, headers=headers)
+        return HTMLResponse(html, headers=headers)
 
     @app.get("/files/{fid}/pdf")
     async def pdf_meta(fid: str, t: str | None = None):
